@@ -26,9 +26,9 @@
   }
 
   const themeButton=$('#btnTheme');
-  function setStageTheme(enabled){document.documentElement.dataset.stageTheme=enabled?'on':'off';themeButton.textContent=enabled?'Прежние цвета':'Цвета презентации';themeButton.setAttribute?.('aria-pressed',String(enabled));}
+  function setStageTheme(enabled){document.documentElement.dataset.stageTheme=enabled?'on':'off';if(themeButton){themeButton.textContent=enabled?'Прежние цвета':'Цвета презентации';themeButton.setAttribute?.('aria-pressed',String(enabled));}}
   try{setStageTheme(localStorage.getItem('pitch.stageTheme')!=='off');}catch(_){setStageTheme(true);}
-  themeButton.addEventListener('click',()=>{const enabled=document.documentElement.dataset.stageTheme!=='on';setStageTheme(enabled);try{localStorage.setItem('pitch.stageTheme',enabled?'on':'off');}catch(_){}});
+  themeButton?.addEventListener('click',()=>{const enabled=document.documentElement.dataset.stageTheme!=='on';setStageTheme(enabled);try{localStorage.setItem('pitch.stageTheme',enabled?'on':'off');}catch(_){}});
 
   const state = {
     report: null, samples: null, sampleRate: 0, audioBlob: null, audioName: '',
