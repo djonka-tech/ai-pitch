@@ -5,7 +5,7 @@
   'use strict';
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
-  const E = window.PitchEngine, LEX = window.PitchLexicon, LLM = window.PitchLLM;
+  const E = window.PitchEngine, LEX = window.PitchLexicon;
 
   /* защита от «мёртвой страницы»: любая ошибка видна пользователю */
   window.addEventListener('error', (e) => {
@@ -20,8 +20,8 @@
     }
     b.textContent = 'Ошибка интерфейса: ' + msg + '. Обновите страницу (F5). Если повторяется — сообщите текст ошибки.';
   });
-  if (!E || !LEX || !LLM) {
-    document.body.innerHTML = '<div style="padding:40px;font:16px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#fca5a5">Не загрузились модули (lexicon.js / engine.js / llm.js). Проверьте, что все файлы лежат рядом с index.html.</div>';
+  if (!E || !LEX) {
+    document.body.innerHTML = '<div style="padding:40px;font:16px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#fca5a5">Не загрузились модули (lexicon.js / engine.js). Проверьте, что все файлы лежат рядом с index.html.</div>';
     return;
   }
 
@@ -35,7 +35,7 @@
     cues: null, recording: false, stream: null, recorder: null, chunks: [], analyser: null,
     audioCtx: null, mediaStreamSrc: null, recognition: null, asrFinal: '', asrInterim: '',
     recStart: 0, recTimerId: null, levelId: null, levelHistory: [], silenceStart: 0, pauseCount: 0,
-    inputMode: 'mic', audioSource: null, audioVersion: 0, starting: false, finishing: null, previewUrl: null, analyzing: false, cueStart: null, levelThreshold: 0.012, chatHistory: [], demo: false, lastLevel: 0
+    inputMode: 'mic', audioSource: null, audioVersion: 0, starting: false, finishing: null, previewUrl: null, analyzing: false, cueStart: null, levelThreshold: 0.012, demo: false, lastLevel: 0
   };
 
   const SAMPLE_PITCH = `Добрый день, меня зовут Алексей, мы делаем платформу компьютерного зрения для приёмки товара на складе.
@@ -516,8 +516,8 @@ Traction: четыре пилота, два перешли в годовые к�
       const dur = buf.duration; previewAudio();
       $('#inputStatus').textContent = 'Источник: загруженный файл. Все показатели относятся к записи. Без расшифровки темп приблизительный.';
       $('#fileInfo').innerHTML = `<b>${esc(file.name)}</b> · ${(file.size / 1048576).toFixed(2)} МБ · ${buf.numberOfChannels} канал(ов) · ${buf.sampleRate} Гц · <b>${fmtTime(dur)}</b> · сигнал готов к анализу`;
-      $('#analyzeHint').textContent = 'Аудио загружено (' + fmtTime(dur) + '). Для анализа содержания загрузите субтитры или запустите распознавание.';
-      if (!$('#trSource').textContent) $('#trSource').textContent = '— загрузите субтитры или запустите распознавание';
+      $('#analyzeHint').textContent = 'Аудио загружено (' + fmtTime(dur) + '). Для анализа содержания загрузите файл субтитров.';
+      if (!$('#trSource').textContent) $('#trSource').textContent = '— загрузите файл субтитров';
     } catch (e) {
       if (version !== state.audioVersion) return;
       state.samples = null;
@@ -579,25 +579,6 @@ Traction: четыре пилота, два перешли в годовые к�
       updateTrCount();
     };
     r.readAsText(f, 'utf-8');
-  });
-
-  $('#btnWhisper').addEventListener('click', async () => {
-    if(state.inputMode!=='file')return;
-    const version=state.audioVersion;
-    const cfg = LLM.loadConfig();
-    const problem = LLM.ready(cfg);
-    if (!state.audioBlob) { alert('Сначала загрузите аудио или видео файл.'); return; }
-    if (problem) { alert('Для распознавания нужен настроенный ИИ-сервис: ' + problem + '.\nЗаполните панель «ИИ-тренер» внизу страницы.'); return; }
-    const btn = $('#btnWhisper');
-    btn.disabled = true; btn.textContent = 'Распознаю…';
-    try {
-      const text = await LLM.transcribe(state.audioBlob, cfg, state.audioName || 'pitch.webm');
-      if(version!==state.audioVersion||state.inputMode!=='file')return;
-      tr.value = text; updateTrCount();
-      $('#trSource').textContent = '— распознано через ИИ (' + cfg.model + ')';
-    } catch (e) {
-      alert('Не удалось распознать: ' + e.message);
-    } finally { btn.disabled = false; btn.textContent = 'Распознать через ИИ (нужен ключ)'; }
   });
 
   /* ==================== АНАЛИЗ ==================== */
@@ -1077,103 +1058,7 @@ Traction: четыре пилота, два перешли в годовые к�
   $('#btnJson').addEventListener('click', () => { if (state.report) download('pitch-report-' + slug(state.report.meta.topic) + '.json', JSON.stringify(state.report, null, 2), 'application/json'); });
   $('#btnPrint').addEventListener('click', () => window.print());
 
-  /* ==================== ИИ-ТРЕНЕР ==================== */
-  function applyPreset() {
-    const p = LLM.PRESETS[$('#llmProvider').value];
-    if (p) { $('#llmBase').value = p.base; $('#llmModel').value = p.model; }
-  }
-  const saved = LLM.loadConfig();
-  $('#llmProvider').value = saved.provider;
-  $('#llmBase').value = saved.base;
-  $('#llmModel').value = saved.model;
-  $('#llmKey').value = saved.apiKey;
-  $('#llmProvider').addEventListener('change', applyPreset);
-  $('#btnLLMSave').addEventListener('click', () => {
-    const cfg = { provider: $('#llmProvider').value, base: $('#llmBase').value.trim(), model: $('#llmModel').value.trim(), apiKey: $('#llmKey').value.trim() };
-    LLM.saveConfig(cfg);
-    const problem = LLM.ready(cfg);
-    $('#llmStatus').textContent = problem ? 'не хватает: ' + problem : 'настройки сохранены ✓';
-  });
-  const cfgNow = () => ({ provider: $('#llmProvider').value, base: $('#llmBase').value.trim(), model: $('#llmModel').value.trim(), apiKey: $('#llmKey').value.trim() });
-
-  function llmGuard() {
-    const problem = LLM.ready(cfgNow());
-    if (problem) { $('#llmStatus').innerHTML = '<span style="color:#fca5a5">Сначала настройте ИИ-сервис: ' + esc(problem) + '</span>'; return false; }
-    return true;
-  }
-  async function withStatus(btn, label, fn) {
-    const old = btn.textContent;
-    btn.disabled = true; btn.textContent = label;
-    $('#llmStatus').textContent = 'запрос к модели…';
-    try { const out = await fn(); $('#llmStatus').textContent = 'готово ✓'; return out; }
-    catch (e) { $('#llmStatus').innerHTML = '<span style="color:#fca5a5">Ошибка: ' + esc(e.message) + '</span>'; return null; }
-    finally { btn.disabled = false; btn.textContent = old; }
-  }
-
-  $('#btnDeep').addEventListener('click', async (e) => {
-    if (!state.report || !llmGuard()) return;
-    const btn = e.currentTarget;
-    const res = await withStatus(btn, 'Анализирую…', () => LLM.deepAnalyze(state.report, cfgNow()));
-    if (!res) return;
-    const box = $('#deepOut');
-    box.classList.remove('hidden');
-    box.innerHTML = `<h3 style="margin-top:0">Вывод ИИ-тренера</h3>
-      <p>${esc(res.verdict || '')}</p>
-      ${listBlock('💪 Сильные стороны', res.top_strengths)}
-      ${listBlock('🚨 Критические риски', res.critical_risks)}
-      ${res.opening_15 ? `<h4>Первые 15 секунд</h4><div class="rewrite">${esc(res.opening_15)}</div>` : ''}
-      ${res.rewrite_60 ? `<h4>Питч на 60 секунд</h4><div class="rewrite"><div class="after" style="white-space:pre-wrap">${esc(res.rewrite_60)}</div></div>` : ''}
-      ${res.rewrite_30 ? `<h4>Версия на 30 секунд</h4><div class="rewrite">${esc(res.rewrite_30)}</div>` : ''}
-      ${listBlock('✂ Что убрать', res.what_to_cut)}
-      ${listBlock('🎙 Что поправить в подаче', res.delivery_fixes)}
-      ${Array.isArray(res.questions) && res.questions.length ? `<h4>Неудобные вопросы и готовые ответы</h4>${res.questions.map((q) => `<div class="q-card"><b>${esc(q.q)}</b><div class="q-meta"><div><b>Ответ:</b> ${esc(q.answer)}</div><div><b>Проверяют:</b> ${esc(q.why || '')}</div></div></div>`).join('')}` : ''}`;
-    box.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-  function listBlock(title, arr) {
-    if (!Array.isArray(arr) || !arr.length) return '';
-    return `<h4>${title}</h4><ul>${arr.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
-  }
-
-  $('#btnRewrite60').addEventListener('click', async (e) => {
-    if (!state.report || !llmGuard()) return;
-    const btn = e.currentTarget;
-    const res = await withStatus(btn, 'Переписываю…', () => LLM.rewritePitch(state.report, 60, cfgNow()));
-    if (!res) return;
-    const box = $('#deepOut');
-    box.classList.remove('hidden');
-    box.innerHTML = `<h3 style="margin-top:0">Питч на 60 секунд (ИИ)</h3>
-      <div class="rewrite"><div class="after" style="white-space:pre-wrap">${esc(res.text || '')}</div></div>
-      ${listBlock('Тайминг', res.beats)}
-      ${listBlock('Что изменилось', res.notes)}`;
-    box.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-
-  const chatLog = $('#chatLog');
-  function pushChat(role, text) {
-    const d = document.createElement('div');
-    d.className = 'chat-msg ' + role;
-    d.textContent = text;
-    chatLog.appendChild(d);
-    chatLog.scrollTop = chatLog.scrollHeight;
-  }
-  async function sendChat() {
-    if (!state.report || !llmGuard()) return;
-    const q = $('#chatInput').value.trim();
-    if (!q) return;
-    $('#chatInput').value = '';
-    pushChat('me', q);
-    state.chatHistory.push({ role: 'me', text: q });
-    $('#btnChat').disabled = true;
-    try {
-      const ans = await LLM.askCoach(q, state.report, state.chatHistory, cfgNow());
-      pushChat('ai', ans);
-      state.chatHistory.push({ role: 'ai', text: ans });
-    } catch (e) {
-      pushChat('ai', 'Ошибка: ' + e.message);
-    } finally { $('#btnChat').disabled = false; }
-  }
-  $('#btnChat').addEventListener('click', sendChat);
-  $('#chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+  try { localStorage.removeItem('pitchengine.llm'); } catch (_) {}
 
   /* ==================== СПРАВКА ==================== */
   $('#btnHelp').addEventListener('click', () => $('#helpModal').classList.remove('hidden'));

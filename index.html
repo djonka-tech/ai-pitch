@@ -84,7 +84,7 @@
         <button class="btn primary" id="btnToRec">Далее: записать выступление →</button>
         <button class="btn ghost" id="btnTryDemo">Посмотреть пример отчёта</button>
       </div>
-      <div class="hint">Данные не отправляются на сервер: вся обработка — в вашем браузере. Интернет нужен только для распознавания речи и (по желанию) для ИИ-тренера.</div>
+      <div class="hint">Показатели считаются в браузере. Браузерное распознавание речи может использовать интернет; для загруженного файла можно добавить субтитры.</div>
     </div>
   </section>
 
@@ -145,11 +145,7 @@
             <input type="file" id="subsInput" accept=".srt,.vtt,.txt">
             <small>Файл .srt/.vtt даст точный транскрипт и привязку блоков ко времени.</small>
           </label>
-          <div class="field">
-            <span>Распознать речь из файла (опция)</span>
-            <button class="btn ghost" id="btnWhisper">Распознать через ИИ (нужен ключ)</button>
-            <small>Использует OpenAI-совместимый сервис из панели «ИИ-тренер» внизу отчёта.</small>
-          </div>
+
         </div>
       </div>
 
@@ -204,40 +200,6 @@
     </div>
     <div id="report"></div>
 
-    <!-- ИИ-тренер -->
-    <div class="card llm-card" id="llmCard">
-      <h2>ИИ-тренер (опция)</h2>
-      <p class="muted small">Базовый разбор считается полностью локально. Если подключить LLM (OpenAI-совместимый API или локальную Ollama), можно получить переписанный питч на 60/30 секунд, вопросы с готовыми ответами и диалог с тренером. Ключ хранится только в этом браузере (localStorage) и отправляется напрямую в выбранный сервис.</p>
-      <div class="grid four">
-        <label class="field"><span>Провайдер</span>
-          <select id="llmProvider">
-            <option value="openai">OpenAI</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="openrouter">OpenRouter</option>
-            <option value="groq">Groq</option>
-            <option value="ollama">Ollama (локально)</option>
-            <option value="custom">Свой endpoint</option>
-          </select>
-        </label>
-        <label class="field"><span>Base URL</span><input id="llmBase" type="text" placeholder="https://api.openai.com/v1"></label>
-        <label class="field"><span>Модель</span><input id="llmModel" type="text" placeholder="gpt-4o-mini"></label>
-        <label class="field"><span>API-ключ</span><input id="llmKey" type="password" placeholder="sk-…"></label>
-      </div>
-      <div class="row">
-        <button class="btn ghost small" id="btnLLMSave">Сохранить настройки</button>
-        <button class="btn primary small" id="btnDeep">Углубить анализ ИИ</button>
-        <button class="btn ghost small" id="btnRewrite60">Переписать питч на 60 секунд</button>
-        <span id="llmStatus" class="muted small"></span>
-      </div>
-      <div id="deepOut" class="deep-out hidden"></div>
-      <div class="chat">
-        <div id="chatLog" class="chat-log"></div>
-        <div class="chat-row">
-          <input id="chatInput" type="text" placeholder="Спросите тренера: «что убрать из первых 30 секунд?»">
-          <button class="btn primary small" id="btnChat">Спросить</button>
-        </div>
-      </div>
-    </div>
   </section>
 </main>
 
@@ -262,7 +224,6 @@
 
 <script src="lexicon.js"></script>
 <script src="engine.js"></script>
-<script src="llm.js"></script>
-<script src="app.js?v=hide-theme-button"></script>
+<script src="app.js?v=without-coach"></script>
 </body>
 </html>
