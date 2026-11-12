@@ -760,7 +760,7 @@ Traction: четыре пилота, два перешли в годовые к�
     const choices = group === 'speech' ? [
       ['confidence', 'Выразительность', !s ? '' : s.f0.intonationRange < 2 ? 'Выделите голосом три главные мысли. Сделайте акцент на результате и вашем запросе к жюри.' : 'Проверьте, слышны ли интонационные акценты на главных тезисах.'],
       ['pace', 'Темп и ритм', !s ? '' : s.pauseRatio > .3 ? 'Сократите заминки между мыслями. Перед записью выпишите пять опорных тезисов.' : ((t.tempo.wordsPerMin || s.rate.estimatedWordsPerMin) > 175 ? 'Замедляйтесь на цифрах и делайте короткую остановку после ключевой мысли.' : ((t.tempo.wordsPerMin || s.rate.estimatedWordsPerMin) < 110 ? 'Уберите затянутое вступление. Переходите к проблеме и результату уже в первых фразах.' : 'Сохраняйте этот ритм. Отделяйте ключевые цифры короткой паузой.'))],
-      ['energy', 'Акценты в речи', !s ? '' : s.loudness.dynRangeDb < 8 ? 'Избегайте чтения на одной громкости. Произнесите главный результат с заметным акцентом.' : 'Акценты уже слышны. Проверьте, что они приходятся на пользу клиенту и запрос к аудитории.']
+      ['energy', 'Акценты громкостью', !s ? '' : s.loudness.accentRange < 3 ? 'Попробуйте выделить главный результат громкостью.' : 'Прослушайте запись и проверьте, какие фразы выделяются громкостью.']
     ] : [
       ['clarity', 'Понятность', t.fillers.total || t.cliches.total ? 'Уберите повторяющиеся вводные слова и общие фразы. В каждом предложении оставьте одну мысль.' : 'Сохраняйте короткие, прямые фразы. Проверьте, понятны ли термины человеку вне вашей отрасли.'],
       ['persuasion', 'Конкретика', t.facts.numbers < 3 ? 'Добавьте три проверяемых числа: масштаб проблемы, результат и следующий план.' : 'Числа уже есть. Укажите, откуда они взяты и за какой период получены.'],
@@ -814,13 +814,13 @@ Traction: четыре пилота, два перешли в годовые к�
     /* — речь — */
     if(s){
       const speechAdvice=feedback.improvements.filter(x=>/остановку на|акценты голосом|Замедлитесь|Сократите затянутое|Уложитесь/.test(x.title));
-      html.push(`<div class="panel-card"><h2>Речь и голос</h2><div class="speech-scores">${['confidence','pace','energy'].map(key=>{const a=r.scores.find(x=>x.key===key);return `<div><span class="muted small">${esc({confidence:'Выразительность',pace:'Темп и паузы',energy:'Динамика'}[key])}</span><b style="color:${a?.available!==false?scoreColor(a?.score||0):'var(--muted)'}">${a?.available!==false?a.score+'/100':'нет данных'}</b></div>`;}).join('')}</div><div class="split"><div><h3>Параметры речи</h3><table class="metrics">
+      html.push(`<div class="panel-card"><h2>Речь и голос</h2><div class="speech-scores">${['confidence','pace','energy'].map(key=>{const a=r.scores.find(x=>x.key===key);return `<div><span class="muted small">${esc({confidence:'Выразительность',pace:'Темп и паузы',energy:'Акценты громкостью'}[key])}</span><b style="color:${a?.available!==false?scoreColor(a?.score||0):'var(--muted)'}">${a?.available!==false?a.score+'/100':'нет данных'}</b></div>`;}).join('')}</div><div class="split"><div><h3>Параметры речи</h3><table class="metrics">
         <tr><td>Длительность</td><td>${s.durationSec} с${m.targetDurationSec?' при регламенте '+m.targetDurationSec+' с':''}</td></tr>
         <tr><td>Темп речи</td><td>${esc(E.describeTempo(s,t))}</td></tr>
         <tr><td>Речь и остановки</td><td>${s.speechSec} с речи, ${s.pauseSec} с остановок внутри выступления</td></tr>
         <tr><td>Паузы</td><td>${s.pauses.count} пауз; длиннее полутора секунд — ${s.pauses.long}; самая длинная — ${s.pauses.longest} с</td></tr>
         <tr><td>Интонация</td><td>${s.f0.intonationRange == null?'Недостаточно устойчивых участков голоса для оценки.':s.f0.intonationRange<2?'Мало изменений высоты голоса. Добавьте акценты на результате и запросе.':s.f0.intonationRange>8?'Большие перепады высоты голоса. Проверьте, выделяют ли они важные мысли.':'Высота голоса меняется. Проверьте, совпадают ли акценты с главными тезисами.'}</td></tr>
-        <tr><td>Акценты громкостью</td><td>${s.loudness.dynRangeDb<8?'Изменения выражены слабо. Попробуйте выделить голосом ключевые фразы.':'Изменения громкости присутствуют. Это характеристика записи, а не громкости в зале.'}</td></tr>
+        <tr><td>Акценты громкостью</td><td>${s.loudness.accentRange == null?'Недостаточно озвученных участков для сравнения.':s.loudness.accentRange<3?'Громкость меняется мало. Попробуйте выделить голосом ключевые фразы.':'Громкость между участками речи меняется. Прослушайте, какие фразы выделяются.'}</td></tr>
         <tr><td>Аудиозапись</td><td>${s.loudness.clippingPct>.05?'Есть перегрузка. Уменьшите усиление микрофона.':s.loudness.lowLevel?'Сигнал записи очень слабый. Прослушайте запись и проверьте микрофон.':'Сигнал записан без сильной перегрузки.'} Чёткость произношения слов отдельно не оценивается.</td></tr>
       </table></div><div><h3>Что исправить в подаче</h3>${speechAdvice.length?'<ol class="precise-list">'+speechAdvice.map(x=>`<li><b>${esc(x.title)}</b><p>${esc(x.evidence)}</p><span class="action">${esc(x.action)}</span></li>`).join('')+'</ol>':'<p class="muted">По доступным признакам явных замечаний не выделено. Прослушайте запись и проверьте, слышен ли акцент на главном результате.</p>'}<h3>Где были паузы</h3>${s.pauses.list.length?'<div class="chip-list">'+s.pauses.list.slice().sort((a,b)=>b.dur-a.dur).slice(0,8).sort((a,b)=>a.start-b.start).map(x=>`<span class="chip">${fmtTime(x.start)}–${fmtTime(x.end)} · ${x.dur} с</span>`).join('')+'</div>':'<p class="muted small">Значимых остановок не найдено.</p>'}<p class="muted small">Смысловая пауза может быть полезна. Автоматическая оценка не отличает её от заминки по смыслу.</p></div></div></div>`);
     }else html.push('<div class="panel-card"><h2>Речь и голос</h2><p class="muted">Без аудиозаписи этот раздел не оценивается.</p></div>');
@@ -881,13 +881,13 @@ Traction: четыре пилота, два перешли в годовые к�
       qready:'Учитываются основные темы, числовые примеры и профильные критерии отрасли «'+t.industryProfile.label+'». Полнота смысла автоматически не проверяется.',
       confidence:s&&s.f0.intonationRange<2?'Интонация меняется мало. Выделите голосом ключевой результат и запрос к аудитории.':'Оценка учитывает изменение высоты голоса на устойчивых участках речи.',
       timbre:'Оценка звукового сигнала зависит от микрофона, уровня записи и шума. Чёткость произношения отдельно не оценивается.',
-      energy:s&&s.loudness.dynRangeDb<8?'Акценты громкостью выражены слабо. Подчеркните главный тезис голосом.':'Оценка отражает изменения громкости в записи, а не громкость в комнате.',
+      energy:s&&s.loudness.accentRange<3?'Громкость меняется мало. Попробуйте выделить главный тезис.':'Оценка учитывает устойчивые изменения громкости между участками речи.',
       pace:t.tempo.wordsPerMin?'По полной записи и расшифровке — '+t.tempo.wordsPerMin+' слов в минуту. Паузы учитываются.':'Без полной расшифровки темп приблизительный. Добавьте текст для точного подсчёта слов.'
     };
     return explanations[a.key]||'Оценка по доступным признакам выступления.';
   }
   function axisHtml(a,r) {
-    const labels={confidence:'Выразительность',timbre:'Качество записи',energy:'Акценты в речи',pace:'Темп и ритм',structure:'Структура питча',persuasion:'Конкретика',clarity:'Понятность',positivity:'Позитивный язык',qready:'Полнота аргументов'};
+    const labels={confidence:'Выразительность',timbre:'Качество записи',energy:'Акценты громкостью',pace:'Темп и ритм',structure:'Структура питча',persuasion:'Конкретика',clarity:'Понятность',positivity:'Позитивный язык',qready:'Полнота аргументов'};
     const available=a.available!==false;
     return `<div class="axis"><div class="axis-top"><b>${esc(labels[a.key]||a.label)}</b><span style="color:${available?scoreColor(a.score):'var(--muted)'}">${available?a.score+'/100':'нет данных'}</span></div><div class="track"><i style="width:${available?a.score:0}%;background:${scoreColor(a.score)}"></i></div><div class="axis-detail">${esc(axisExplanation(a,r))}</div></div>`;
   }

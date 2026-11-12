@@ -120,6 +120,11 @@
     return { f0, r: clamp(y1, 0, 1) };
   }
 
+  function reliablePitch(hz, correlation) {
+    // A low voice has fewer periods in a 40 ms window and lower correlation.
+    return hz > 0 && correlation >= 0.68 - clamp((105 - hz) * 0.006, 0, 0.21);
+  }
+
   function measureIntonation(f0, correlation, speech) {
     const stable = [];
     // One median per 120 ms. Isolated pitch estimates near pauses and
@@ -127,9 +132,7 @@
     for (let start = 0; start < f0.length; start += 12) {
       const pitches = [];
       for (let i = start; i < Math.min(start + 12, f0.length); i++) {
-        // A low voice has fewer periods in a 40 ms window and lower correlation.
-        const minCorrelation = 0.68 - clamp((105 - f0[i]) * 0.006, 0, 0.21);
-        if (speech[i] && correlation[i] >= minCorrelation && f0[i] > 0) pitches.push(semitones(f0[i]));
+        if (speech[i] && reliablePitch(f0[i], correlation[i])) pitches.push(semitones(f0[i]));
       }
       if (pitches.length < 6 || percentile(pitches, 0.8) - percentile(pitches, 0.2) > 2.5) continue;
       let pitch = median(pitches);
@@ -142,6 +145,19 @@
       stable.push(pitch);
     }
     return stable.length < 6 ? null : round(percentile(stable, 0.9) - percentile(stable, 0.1), 2);
+  }
+
+  function measureAccentRange(levels, speech, f0, correlation, threshold) {
+    const sustainedLevels = [];
+    for (let start = 0; start < f0.length; start += 30) {
+      const voicedLevels = [];
+      for (let i = start; i < Math.min(start + 30, f0.length); i++) {
+        if (speech[i] && levels[i] >= threshold && reliablePitch(f0[i], correlation[i])) voicedLevels.push(levels[i]);
+      }
+      // Compare representative levels across 300 ms windows to ignore isolated peaks and pauses.
+      if (voicedLevels.length >= 10) sustainedLevels.push(median(voicedLevels));
+    }
+    return sustainedLevels.length < 6 ? null : round(percentile(sustainedLevels, 0.9) - percentile(sustainedLevels, 0.1), 2);
   }
 
   /* ==================== АНАЛИЗ РЕЧИ ==================== */
@@ -199,7 +215,7 @@
         timbre: { centroidHz: 0, centroidSd: 0, rolloffHz: 0, slopeDbOct: 0, hfRatio: 0, zcr: 0, hnrDb: 0, jitterPct: 0, shimmerPct: 0, flux: 0 },
         rate: { syllables: 0, syllablesPerMin: 0, articulationRate: 0, onsetVariabilityMs: 0, estimatedWordsPerMin: 0 },
         prosody: { phrases: 0, up: 0, down: 0, flat: 0, upShare: 0, downShare: 0, flatShare: 0, list: [] },
-        loudness: { meanDb: 0, sdDb: 0, p10Db: 0, p90Db: 0, dynRangeDb: 0, peakDb: round(db(peak), 1), clippingPct: 0, noiseFloorDb: round(noiseFloorDb, 1), snrDb: 0, lowLevel: false },
+        loudness: { meanDb: 0, sdDb: 0, p10Db: 0, p90Db: 0, dynRangeDb: 0, accentRange: null, peakDb: round(db(peak), 1), clippingPct: 0, noiseFloorDb: round(noiseFloorDb, 1), snrDb: 0, lowLevel: false },
         timeline: { t: [], f0st: [], db: [], speech: [] },
         debug: { frames: nFrames, thrDb: round(thrDb, 1), elapsedMs: Math.round(now() - T0) }
       };
@@ -398,6 +414,7 @@
       p10Db: round(percentile(speechDb, 0.1), 1),
       p90Db: round(percentile(speechDb, 0.9), 1),
       dynRangeDb: round(percentile(speechDb, 0.9) - percentile(speechDb, 0.1), 1),
+      accentRange: measureAccentRange(dbArr, speech, f0, rraw, thrDb),
       peakDb: round(db(peak), 1),
       clippingPct: round(clipCount / Math.max(1, x.length) * 100, 3),
       noiseFloorDb: round(noiseFloorDb, 1),
@@ -812,11 +829,11 @@
   function scoreSpeech(s, t) {
     const axes = [];
     if (!s) return axes;
-    const f = s.f0, ti = s.timbre, lo = s.loudness, r = s.rate, p = s.pauses, pr = s.prosody;
+    const f = s.f0, ti = s.timbre, lo = s.loudness, r = s.rate, p = s.pauses;
 
     const pace = (t && t.tempo.wordsPerMin) || r.estimatedWordsPerMin;
     const range = f.intonationRange;
-    const confidence = range == null ? 0 : Math.round(15 + 85 * clamp((range - 0.5) / 4, 0, 1));
+    const confidence = range == null ? 0 : Math.round(15 + 85 * (1 - Math.exp(-Math.max(0, range - 0.5) / 3.2)));
     const cNotes=[];
     if(range != null && range < 2)cNotes.push('Интонация меняется мало: выделите голосом главный результат и запрос.');
     if(range > 8)cNotes.push('Большие перепады тона: проверьте, помогают ли они выделить важные мысли.');
@@ -843,20 +860,13 @@
       notes: tNotes
     });
 
-    // энергия и динамика
-    // Absolute gain is a recording setting, not speaker energy.
-    const loudScore = 100 - clamp(lo.clippingPct * 30, 0, 80);
-    const dynScore = bandScore(lo.dynRangeDb, 6, 24, 6);
-    const clipPen = clamp(lo.clippingPct * 60, 0, 30);
-    const energy = Math.round(clamp(0.45 * loudScore + 0.35 * dynScore + 0.2 * bandScore(pace, 110, 175, 50) - clipPen, 0, 100));
+    const accents = lo.accentRange;
+    const energy = accents == null ? 0 : Math.round(15 + 85 * (1 - Math.exp(-Math.max(0, accents - 0.8) / 6)));
     const eNotes = [];
-    if (lo.lowLevel) eNotes.push('Сигнал записи очень слабый. Прослушайте её и проверьте усиление микрофона.');
-    if (lo.peakDb > -1) eNotes.push('Уровень близок к цифровому пределу: уменьшите усиление микрофона.');
-    if (lo.dynRangeDb < 8) eNotes.push('Плоская динамика: нет акцентов громкостью');
-    if (lo.clippingPct > 0.05) eNotes.push('Есть клиппинг — микрофон перегружен');
+    if (accents != null && accents < 3) eNotes.push('Громкость соседних фрагментов меняется мало. Выделите голосом главный результат.');
     axes.push({
-      key: 'energy', label: 'Динамика записи', score: energy, group: 'speech',
-      detail: `Средняя громкость речи: ${lo.meanDb} dBFS, динамический диапазон ${lo.dynRangeDb} дБ, пик ${lo.peakDb} dBFS, шум ${lo.noiseFloorDb} dBFS.`,
+      key: 'energy', label: 'Акценты громкостью', score: energy, group: 'speech',
+      detail: 'Оценка устойчивых перепадов громкости между участками речи.',
       notes: eNotes
     });
 
@@ -1075,6 +1085,7 @@
     if (!text.hasText) scores.forEach((a) => { if (a.group === 'text') a.available = false; });
     if (speech && (speech.durationSec < 8 || speech.speechSec < 3 || speech.f0.frames < 30)) scores.forEach(a => { if (a.group === 'speech') a.available = false; });
     if(speech && speech.f0.intonationRange == null)scores.forEach(a=>{if(a.key==='confidence'){a.available=false;a.notes=['Недостаточно участков с устойчивой высотой голоса.'];}});
+    if(speech && speech.loudness.accentRange == null)scores.forEach(a=>{if(a.key==='energy'){a.available=false;a.notes=['Недостаточно озвученных участков для сравнения громкости.'];}});
     if (!speech) scores.forEach((a) => { if (a.group === 'speech') a.available = false; });
 
     const avail = scores.filter((a) => a.available);
@@ -1162,7 +1173,7 @@
     L.push('', '## Подача и понятность');
     for(const key of ['confidence','pace','energy','clarity','persuasion','qready']){
       const axis=r.scores.find(x=>x.key===key);if(!axis)continue;
-      const names={confidence:'Выразительность',pace:'Темп и ритм',energy:'Акценты в речи',clarity:'Понятность',persuasion:'Конкретика',qready:'Полнота аргументов'};
+      const names={confidence:'Выразительность',pace:'Темп и ритм',energy:'Акценты громкостью',clarity:'Понятность',persuasion:'Конкретика',qready:'Полнота аргументов'};
       L.push(`- ${names[key]}: ${axis.available===false?'недостаточно данных':axis.score+'/100'}.`);
     }
     L.push('', '## Структура питча', '', '### Уже есть');
