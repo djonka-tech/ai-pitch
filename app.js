@@ -142,15 +142,26 @@ Traction: четыре пилота, два перешли в годовые к�
   /* ==================== ЗАПИСЬ С МИКРОФОНА ==================== */
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const asrBadge = $('#asrStatus');
-  if (!SR) {
-    asrBadge.textContent = 'недоступно в этом браузере';
+  const asrFallback = $('#asrFallback');
+  function showAsrFallback(message) {
+    asrBadge.textContent = 'недоступно';
     asrBadge.className = 'badge bad';
-    $('#liveTranscript').textContent = 'Автоматическое распознавание недоступно (нужен Chrome или Edge). Запись работает без распознавания. Для анализа содержания загрузите субтитры в режиме файла или выберите «Только текст».';
+    if (!tr.value.trim()) $('#liveTranscript').textContent = message;
+    asrFallback.classList.remove('hidden');
+  }
+  asrFallback.addEventListener('click', () => {
+    const draft = tr.value.trim();
+    if (!setInputMode('text')) return;
+    if (draft) { tr.value = draft; updateTrCount(); }
+    tr.focus();
+  });
+  if (!SR) {
+    showAsrFallback('В этом браузере можно записать звук. Для текста можно использовать диктовку на клавиатуре в режиме «Только текст».');
   } else {
-    asrBadge.textContent = 'готово (Chrome/Edge, нужен интернет)';
+    asrBadge.textContent = 'проверим при записи';
     asrBadge.className = 'badge ok';
   }
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !(window.AudioContext || window.webkitAudioContext)) {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     $('#btnRec').disabled = true;
     $('#recStatus').textContent = window.isSecureContext ? 'Браузер не поддерживает запись. Загрузите готовый аудиофайл.' : 'Микрофону нужен HTTPS или localhost. Загрузите файл или откройте сайт через localhost.';
   }
@@ -172,13 +183,58 @@ Traction: четыре пилота, два перешли в годовые к�
     return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
   }
 
-  function startAsr() {
+  async function within(promise, milliseconds) {
+    let timer;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Время ожидания истекло.')), milliseconds);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  function updateRecognitionText() {
+    tr.value = (state.asrFinal + ' ' + state.asrInterim).trim();
+    updateTrCount();
+    $('#liveTranscript').textContent = tr.value;
+    if (tr.value) $('#trSource').textContent = '— распознано в браузере';
+  }
+
+  function startAsr(track) {
     if (!SR || !$('#enableAsr').checked) return;
     try {
       const r = new SR();
+      let running = false, failures = 0, restart, notifyEnd;
       r.lang = 'ru-RU'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+      const begin = () => {
+        try {
+          // Browsers with track input can use the same microphone as the recorder.
+          try { r.start(track); } catch (_) { r.start(); }
+          running = true;
+        } catch (_) {
+          showAsrFallback('Не удалось запустить распознавание. Звук продолжает записываться.');
+        }
+      };
+      state.recognition = r;
+      state.stopAsr = async () => {
+        clearTimeout(restart);
+        try {
+          if (running) {
+            const ended = new Promise(resolve => { notifyEnd = resolve; });
+            r.stop();
+            await within(ended, 1800);
+          }
+        } catch (_) {
+          try { r.abort(); } catch (_) {}
+        } finally {
+          state.recognition = null;
+          state.stopAsr = null;
+        }
+      };
       r.onresult = (ev) => {
-        if (!state.recording || state.recognition !== r) return;
+        if (state.recognition !== r) return;
+        failures = 0;
+        asrBadge.textContent = 'распознаётся';
+        asrBadge.className = 'badge ok';
         let interim = '';
         for (let i = ev.resultIndex; i < ev.results.length; i++) {
           const res = ev.results[i];
@@ -197,27 +253,31 @@ Traction: четыре пилота, два перешли в годовые к�
           }
         }
         state.asrInterim = interim;
-        tr.value = (state.asrFinal + ' ' + interim).trim();
-        updateTrCount();
-        $('#liveTranscript').innerHTML = esc(tr.value || '') + (interim ? ' <span class="muted">…</span>' : '');
-        $('#trSource').textContent = '— распознано в браузере';
+        updateRecognitionText();
       };
       r.onerror = (e) => {
-        const code = e && e.error;
-        asrBadge.textContent = 'ошибка: ' + code;
-        asrBadge.className = 'badge bad';
-        if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'audio-capture') state.asrDead = true;
-        if (code === 'network') addTip('bad', 'Сервис распознавания недоступен (нет интернета). Аудио записывается. Для содержания можно загрузить субтитры или использовать режим «Только текст».');
-        if (code === 'not-allowed') addTip('bad', 'Нет доступа к микрофону для распознавания. Разрешите доступ в браузере.');
+        if (!state.recording || state.recognition !== r || e.error === 'no-speech') return;
+        failures = 3;
+        const message = e.error === 'network' ? 'Сервис распознавания недоступен. Проверьте интернет или попробуйте другой браузер.' : 'Браузер не смог распознать речь. Проверьте разрешение на микрофон или попробуйте другой браузер.';
+        showAsrFallback(message);
       };
       r.onend = () => {
-        if (state.recording && state.recognition === r && !state.asrDead) { try { r.start(); } catch (e) { state.asrDead = true; } }
+        running = false;
+        notifyEnd?.();
+        if (!state.recording || state.recognition !== r) return;
+        if (failures++ >= 3) {
+          if (asrBadge.textContent !== 'недоступно') showAsrFallback('Браузер остановил распознавание речи. Звук продолжает записываться.');
+          return;
+        }
+        // Preserve the last partial phrase before the browser opens a new session.
+        state.asrFinal = (state.asrFinal + ' ' + state.asrInterim).trim();
+        state.asrInterim = '';
+        state.cueStart = null;
+        restart = setTimeout(begin, 300);
       };
-      r.start();
-      state.recognition = r;
+      begin();
     } catch (e) {
-      asrBadge.textContent = 'ошибка запуска';
-      asrBadge.className = 'badge bad';
+      showAsrFallback('Не удалось запустить распознавание. Звук продолжает записываться.');
     }
   }
 
@@ -372,12 +432,12 @@ Traction: четыре пилота, два перешли в годовые к�
 
   function releaseCapture() {
     clearInterval(state.recTimerId); clearInterval(state.levelId);
-    try { state.recognition?.stop(); } catch (_) {}
     try { state.mediaStreamSrc?.disconnect(); } catch (_) {}
     try { state.analyser?.disconnect(); } catch (_) {}
     try { state.monitorGain?.disconnect(); } catch (_) {}
     state.stream?.getTracks().forEach(t => t.stop());
     state.stream = null;
+    state.analyser = state.mediaStreamSrc = state.monitorGain = null;
     $('#btnRec').classList.remove('hidden'); $('#btnStop').classList.add('hidden');
     $('#micDevice').disabled = false;
   }
@@ -386,6 +446,16 @@ Traction: четыре пилота, два перешли в годовые к�
     if (state.starting || state.recording || state.finishing || state.analyzing) return;
     state.starting = true; $('#btnRec').disabled = true;
     try {
+      // Ask for Web Audio while the click is still active. Recording itself
+      // can start even if the browser leaves the audio context suspended.
+      const Context = window.AudioContext || window.webkitAudioContext;
+      let ctx;
+      try {
+        if (Context) {
+          ctx = state.audioCtx = state.audioCtx?.state !== 'closed' && state.audioCtx || new Context();
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        }
+      } catch (_) { /* the level meter is optional */ }
       const deviceId = $('#micDevice').value;
       let stream;
       try {
@@ -395,17 +465,18 @@ Traction: четыре пилота, два перешли в годовые к�
         stream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true });
       }
       state.stream = stream;
-      const ctx = state.audioCtx = state.audioCtx?.state !== 'closed' && state.audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-      await ctx.resume();
-      const src = ctx.createMediaStreamSource(stream), an = ctx.createAnalyser();
-      an.fftSize = 2048; src.connect(an);
-      const monitor = ctx.createGain(); monitor.gain.value = 0;
-      an.connect(monitor); monitor.connect(ctx.destination); state.monitorGain = monitor;
-      state.analyser = an; state.mediaStreamSrc = src;
-      const mime = pickMime();
-      let recorder;
-      try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
-      catch (_) { recorder = new MediaRecorder(stream); }
+      let an;
+      try {
+        if (ctx) {
+          const src = state.mediaStreamSrc = ctx.createMediaStreamSource(stream);
+          const meter = state.analyser = ctx.createAnalyser();
+          meter.fftSize = 2048; src.connect(meter);
+          const monitor = state.monitorGain = ctx.createGain(); monitor.gain.value = 0;
+          meter.connect(monitor); monitor.connect(ctx.destination);
+          an = meter;
+        }
+      } catch (_) { /* keep recording if the meter cannot be initialized */ }
+      const recorder = new MediaRecorder(stream);
       resetAudio(); state.audioSource = 'mic'; state.recorder = recorder;
       const chunks = []; state.chunks = chunks;
       let resolveFinished;
@@ -413,33 +484,54 @@ Traction: четыре пилота, два перешли в годовые к�
       state.captureFinished = finished;
       recorder.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
       let finalized = false;
-      recorder.onstop = async () => {
+      const finalize = async () => {
         if (finalized) return;
         finalized = true;
         state.recording = false; state.finishing = finished;
-        releaseCapture();
+        clearTimeout(state.captureStopTimer);
+        clearInterval(state.recTimerId); clearInterval(state.levelId);
+        const asrFinished = state.asrFinished || state.stopAsr?.();
         try {
-          state.audioBlob = new Blob(chunks, { type: recorder.mimeType || chunks[0]?.type || 'audio/webm' });
-          if (!state.audioBlob.size) throw new Error('Браузер вернул пустую запись. Проверьте микрофон или загрузите файл.');
+          const blob = new Blob(chunks, { type: chunks[0]?.type || recorder.mimeType });
+          if (!blob.size) throw new Error('Браузер не сохранил звук. Проверьте микрофон или загрузите аудиофайл.');
+          state.audioBlob = blob;
           previewAudio();
-          const ready = await ensureSamples();
-          $('#recStatus').textContent = ready ? 'Запись готова. Прослушайте её перед анализом.' : 'Запись сохранена, но браузер не смог прочитать звук. Попробуйте другой браузер или WAV/MP3.';
-          $('#inputStatus').textContent = ready ? 'Источник: запись с микрофона' : 'Звук недоступен для анализа; текст можно разобрать отдельно.';
+          $('#recStatus').textContent = 'Запись готова. Прослушайте её перед анализом.';
+          $('#inputStatus').textContent = 'Источник: запись с микрофона';
         } catch (e) { $('#recStatus').textContent = e.message; }
-        finally { state.finishing = null; resolveFinished(); }
+        finally {
+          await asrFinished;
+          if (!tr.value.trim() && $('#enableAsr').checked && asrFallback.classList.contains('hidden')) {
+            showAsrFallback('Распознанный текст не появился. Можно продиктовать его с клавиатуры в режиме «Только текст».');
+          }
+          if (state.asrInterim) state.cues = null; // Use estimates if the last phrase has no final timestamp.
+          releaseCapture();
+          asrFallback.disabled = false;
+          $('#enableAsr').disabled = false;
+          state.asrFinished = state.finishing = state.finalizeCapture = null;
+          resolveFinished();
+        }
       };
+      state.finalizeCapture = recorder.onstop = finalize;
       recorder.onerror = () => { addTip('bad', 'Браузер прервал запись. Попробуйте отключить распознавание речи и повторить запись.'); stopRecording(); };
-      recorder.start();
+      recorder.start(1000);
       state.recStart = Date.now(); state.recording = true;
-      state.asrDead = false; state.asrFinal = ''; state.asrInterim = ''; state.cueStart = null;
+      state.asrFinal = ''; state.asrInterim = ''; state.cueStart = null;
       state.levelHistory = []; state.pauseCount = 0; state.silenceStart = 0; state.silenceCounted = false; state.lastLevel = 0;
       tr.value = ''; updateTrCount(); $('#trSource').textContent = '';
       $('#recTimer').textContent = '00:00'; $('#liveTips').innerHTML = '';
-      $('#liveTranscript').textContent = $('#enableAsr').checked ? 'Слушаю…' : 'Распознавание отключено. Аудио записывается.';
+      asrFallback.disabled = true;
+      $('#enableAsr').disabled = true;
+      if (SR) {
+        asrFallback.classList.add('hidden');
+        asrBadge.textContent = $('#enableAsr').checked ? 'слушаю…' : 'отключено';
+        asrBadge.className = 'badge';
+        $('#liveTranscript').textContent = $('#enableAsr').checked ? 'Слушаю…' : 'Распознавание отключено. Аудио записывается.';
+      }
       $('#btnRec').classList.add('hidden'); $('#btnStop').classList.remove('hidden'); $('#micDevice').disabled = true;
       $('#recStatus').textContent = 'Идёт запись.';
-      const buf = new Float32Array(an.fftSize);
-      state.levelId = setInterval(() => {
+      const buf = an && new Float32Array(an.fftSize);
+      if (an) state.levelId = setInterval(() => {
         an.getFloatTimeDomainData(buf);
         const rms = Math.sqrt(buf.reduce((sum, v) => sum + v * v, 0) / buf.length);
         state.lastLevel = rms; state.levelHistory.push(rms);
@@ -456,11 +548,11 @@ Traction: четыре пилота, два перешли в годовые к�
       }, 60);
       state.recTimerId = setInterval(() => { $('#recTimer').textContent = fmtTime((Date.now() - state.recStart) / 1000); liveUpdate(); }, 250);
       stream.getAudioTracks().forEach(t => t.addEventListener('ended', () => { if (state.recording) { addTip('bad', 'Микрофон отключён. Запись остановлена.'); stopRecording(); } }));
-      listMics(); startAsr();
+      listMics(); startAsr(stream.getAudioTracks()[0]);
     } catch (e) {
       state.recording = false; releaseCapture();
       const messages = {
-        NotAllowedError: 'Доступ запрещён. Разрешите микрофон в браузере и в настройках конфиденциальности Windows.',
+        NotAllowedError: 'Разрешите доступ к микрофону для этого сайта в настройках браузера и устройства.',
         NotFoundError: 'Микрофон не найден. Подключите устройство и выберите его в списке.',
         NotReadableError: 'Микрофон занят или недоступен системе. Закройте приложения, использующие его, и повторите.',
         OverconstrainedError: 'Выбранный микрофон недоступен. Выберите системный микрофон по умолчанию.',
@@ -474,14 +566,15 @@ Traction: четыре пилота, два перешли в годовые к�
     if (!state.recording) return state.finishing || Promise.resolve();
     state.recording = false; state.finishing = state.captureFinished;
     clearInterval(state.recTimerId); clearInterval(state.levelId);
-    try { state.recognition?.stop(); } catch (_) {}
+    state.asrFinished = state.stopAsr?.();
     $('#recStatus').textContent = 'Сохраняю запись…';
     $('#btnStop').classList.add('hidden');
-    tr.value = (state.asrFinal + ' ' + state.asrInterim).trim(); updateTrCount();
+    const finished = state.finishing;
+    state.captureStopTimer = setTimeout(state.finalizeCapture, 3000);
     try {
       if (state.recorder.state !== 'inactive') state.recorder.stop();
-    } catch (_) { state.recorder.onstop(); }
-    return state.finishing;
+    } catch (_) { state.finalizeCapture(); }
+    return finished;
   }
 
   $('#btnRec').addEventListener('click', startRecording);
@@ -507,9 +600,7 @@ Traction: четыре пилота, два перешли в годовые к�
     $('#fileInfo').innerHTML = `<b>${esc(file.name)}</b> · ${(file.size / 1048576).toFixed(2)} МБ · <span class="muted">декодирую…</span>`;
     state.audioBlob = file;
     try {
-      const ctx = state.audioCtx || (state.audioCtx = new (window.AudioContext || window.webkitAudioContext)());
-      const ab = await file.arrayBuffer();
-      const buf = await ctx.decodeAudioData(ab);
+      const buf = await decodeRecording(file);
       if (version !== state.audioVersion) return;
       state.sampleRate = buf.sampleRate;
       state.samples = downmix(buf);
@@ -535,6 +626,13 @@ Traction: четыре пилота, два перешли в годовые к�
     return out;
   }
 
+  function decodeRecording(blob) {
+    const Context = window.AudioContext || window.webkitAudioContext;
+    if (!Context) return Promise.reject(new Error('Браузер не поддерживает анализ звука.'));
+    const ctx = state.audioCtx = state.audioCtx?.state !== 'closed' && state.audioCtx || new Context();
+    return within(blob.arrayBuffer().then(bytes => ctx.decodeAudioData(bytes)), 8000);
+  }
+
   /** декодировать сохранённую запись (микрофон/файл) в сэмплы для анализа */
   let decoding = null;
   function ensureSamples() {
@@ -544,9 +642,7 @@ Traction: четыре пилота, два перешли в годовые к�
     const version = state.audioVersion, blob = state.audioBlob;
     const task = (async () => {
       try {
-        const ctx = state.audioCtx || (state.audioCtx = new (window.AudioContext || window.webkitAudioContext)());
-        const ab = await blob.arrayBuffer();
-        const buf = await ctx.decodeAudioData(ab);
+        const buf = await decodeRecording(blob);
         if (version !== state.audioVersion) return false;
         state.sampleRate = buf.sampleRate;
         state.samples = downmix(buf);
@@ -624,10 +720,10 @@ Traction: четыре пилота, два перешли в годовые к�
     }
     const text = tr.value.trim();
     const useAudio = !!state.samples;
-    if(state.inputMode!=='text'&&!useAudio){showStep(2);alert('В этом режиме нужна аудиозапись. Запишите голос или загрузите файл. Для ручного текста выберите «Только текст».');return;}
     if (!useAudio && !text) {
       showStep(2);
-      alert('Нужна запись или текст выступления. Запишите питч с микрофона, загрузите файл или вставьте расшифровку.');
+      const message = state.audioBlob ? 'Браузер не смог прочитать звук для анализа. Попробуйте загрузить WAV/MP3 или продиктовать текст в режиме «Только текст».' : 'Нужна запись или текст выступления. Запишите питч с микрофона, загрузите файл или вставьте расшифровку.';
+      $('#analyzeHint').textContent = message;
       return;
     }
     showStep(3);
@@ -996,7 +1092,7 @@ Traction: четыре пилота, два перешли в годовые к�
       try{
         let speech=null;
         if(blob){
-          try{const ctx=state.audioCtx||(state.audioCtx=new (window.AudioContext||window.webkitAudioContext)());const buffer=await ctx.decodeAudioData(await blob.arrayBuffer());speech=E.analyzeAudio(downmix(buffer),buffer.sampleRate);}
+          try{const buffer=await decodeRecording(blob);speech=E.analyzeAudio(downmix(buffer),buffer.sampleRate);}
           catch(_){/* текстовый разбор доступен и при неподдерживаемом кодеке */}
         }
         if(closed)return;

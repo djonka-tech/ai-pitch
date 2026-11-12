@@ -104,7 +104,7 @@
           <button class="btn primary big" id="btnRec">● Начать запись</button>
           <div class="timer" id="recTimer">00:00</div>
           <div class="rec-meta">
-            <div id="recStatus" class="muted">Микрофон не активен</div>
+            <div id="recStatus" class="muted" role="status">Микрофон не активен</div>
             <div id="recLimit" class="muted small"></div>
           </div>
           <button class="btn danger hidden" id="btnStop">■ Стоп</button>
@@ -127,6 +127,7 @@
             <span id="asrStatus" class="badge">проверка…</span>
           </div>
           <div id="liveTranscript" class="transcript-live muted">Текст выступления появится здесь во время записи.</div>
+          <button type="button" id="asrFallback" class="btn ghost small hidden">Перейти к диктовке в режиме «Только текст»</button>
         </div>
       </div>
 
@@ -224,6 +225,6 @@
 
 <script src="lexicon.js"></script>
 <script src="engine.js"></script>
-<script src="app.js?v=without-coach"></script>
+<script src="app.js?v=mic-recovery"></script>
 </body>
 </html>
