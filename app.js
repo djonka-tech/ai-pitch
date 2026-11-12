@@ -35,7 +35,7 @@
     cues: null, recording: false, stream: null, recorder: null, chunks: [], analyser: null,
     audioCtx: null, mediaStreamSrc: null, recognition: null, asrFinal: '', asrInterim: '',
     recStart: 0, recTimerId: null, levelId: null, levelHistory: [], silenceStart: 0, pauseCount: 0,
-    inputMode: 'mic', audioSource: null, audioVersion: 0, starting: false, finishing: null, previewUrl: null, analyzing: false, cueStart: null, levelThreshold: 0.012, demo: false, lastLevel: 0
+    inputMode: 'mic', audioSource: null, audioVersion: 0, starting: false, finishing: null, previewUrl: null, analyzing: false, cueStart: null, demo: false, lastSignalAt: null
   };
 
   const SAMPLE_PITCH = `Добрый день, меня зовут Алексей, мы делаем платформу компьютерного зрения для приёмки товара на складе.
@@ -311,7 +311,7 @@ Traction: четыре пилота, два перешли в годовые к�
     $('#lmWpm').textContent = elapsed > 8 && words ? wpm : '—';
     $('#lmPauses').textContent = state.pauseCount;
     $('#lmFillers').textContent = countFillers(tr.value);
-    $('#lmVolume').textContent = state.lastLevel > 0.008 ? 'Слышно' : state.lastLevel > 0.0003 ? 'Тихо' : 'Нет сигнала';
+    $('#lmVolume').textContent = !state.levelHistory.length ? '—' : Date.now() - (state.lastSignalAt ?? -Infinity) < 2000 ? 'Сигнал есть' : 'Ожидаю звук';
     const limit = +$('#regulation').value;
     $('#recLimit').textContent = limit ? `Регламент: ${fmtTime(limit)}` : 'Без регламента';
     if (elapsed > 12) {
@@ -321,7 +321,6 @@ Traction: четыре пилота, два перешли в годовые к�
       if (f >= 3) addTip('warn', `Уже ${f} слов-паразитов. Заменяйте их паузой в полсекунды.`);
       if (state.pauseCount === 0) addTip('ok', 'Пока нет длинных пауз — речь идёт ровно.');
     }
-    if (state.lastLevel > 0 && 20 * Math.log10(state.lastLevel) < -34 && elapsed > 5) addTip('warn', 'Низкий уровень записи. Проверьте выбранный микрофон, его усиление и расстояние до него.');
     if (limit && elapsed >= limit) {
       addTip('ok', 'Регламент истёк — можно останавливать запись.');
       if (state.recording) stopRecording();
@@ -517,7 +516,7 @@ Traction: четыре пилота, два перешли в годовые к�
       recorder.start(1000);
       state.recStart = Date.now(); state.recording = true;
       state.asrFinal = ''; state.asrInterim = ''; state.cueStart = null;
-      state.levelHistory = []; state.pauseCount = 0; state.silenceStart = 0; state.silenceCounted = false; state.lastLevel = 0;
+      state.levelHistory = []; state.pauseCount = 0; state.silenceStart = 0; state.silenceCounted = false; state.lastSignalAt = null;
       tr.value = ''; updateTrCount(); $('#trSource').textContent = '';
       $('#recTimer').textContent = '00:00'; $('#liveTips').innerHTML = '';
       asrFallback.disabled = true;
@@ -534,9 +533,10 @@ Traction: четыре пилота, два перешли в годовые к�
       if (an) state.levelId = setInterval(() => {
         an.getFloatTimeDomainData(buf);
         const rms = Math.sqrt(buf.reduce((sum, v) => sum + v * v, 0) / buf.length);
-        state.lastLevel = rms; state.levelHistory.push(rms);
+        state.levelHistory.push(rms);
         if (state.levelHistory.length > 4000) state.levelHistory.shift();
         const time = Date.now();
+        if (rms >= 0.00032) state.lastSignalAt = time;
         // Относительный порог для устройств с разным усилением.
         const recent = state.levelHistory.slice(-150).slice().sort((a,b) => a-b);
         const threshold = Math.max(0.0001, (recent[Math.floor(recent.length * 0.9)] || 0) * 0.16);
@@ -758,7 +758,7 @@ Traction: четыре пилота, два перешли в годовые к�
   function coachingRows(r, group) {
     const s = r.speech, t = r.text;
     const choices = group === 'speech' ? [
-      ['confidence', 'Выразительность', !s ? '' : s.f0.sdSemitones < 1.4 ? 'Выделите голосом три главные мысли. Сделайте акцент на результате и вашем запросе к жюри.' : 'Сохраните разнообразную интонацию, особенно в начале и в финале.'],
+      ['confidence', 'Выразительность', !s ? '' : s.f0.intonationRange < 2 ? 'Выделите голосом три главные мысли. Сделайте акцент на результате и вашем запросе к жюри.' : 'Проверьте, слышны ли интонационные акценты на главных тезисах.'],
       ['pace', 'Темп и ритм', !s ? '' : s.pauseRatio > .3 ? 'Сократите заминки между мыслями. Перед записью выпишите пять опорных тезисов.' : ((t.tempo.wordsPerMin || s.rate.estimatedWordsPerMin) > 175 ? 'Замедляйтесь на цифрах и делайте короткую остановку после ключевой мысли.' : ((t.tempo.wordsPerMin || s.rate.estimatedWordsPerMin) < 110 ? 'Уберите затянутое вступление. Переходите к проблеме и результату уже в первых фразах.' : 'Сохраняйте этот ритм. Отделяйте ключевые цифры короткой паузой.'))],
       ['energy', 'Акценты в речи', !s ? '' : s.loudness.dynRangeDb < 8 ? 'Избегайте чтения на одной громкости. Произнесите главный результат с заметным акцентом.' : 'Акценты уже слышны. Проверьте, что они приходятся на пользу клиенту и запрос к аудитории.']
     ] : [
@@ -819,9 +819,9 @@ Traction: четыре пилота, два перешли в годовые к�
         <tr><td>Темп речи</td><td>${esc(E.describeTempo(s,t))}</td></tr>
         <tr><td>Речь и остановки</td><td>${s.speechSec} с речи, ${s.pauseSec} с остановок внутри выступления</td></tr>
         <tr><td>Паузы</td><td>${s.pauses.count} пауз; длиннее полутора секунд — ${s.pauses.long}; самая длинная — ${s.pauses.longest} с</td></tr>
-        <tr><td>Интонация</td><td>${s.f0.sdSemitones<1.4?'Мало изменений высоты голоса. Добавьте акценты на результате и запросе.':s.f0.sdSemitones>4.5?'Большие перепады высоты голоса. Проверьте, выделяют ли они важные мысли.':'Есть разнообразие интонаций. Проверьте, совпадают ли акценты с главными тезисами.'}</td></tr>
+        <tr><td>Интонация</td><td>${s.f0.intonationRange == null?'Недостаточно устойчивых участков голоса для оценки.':s.f0.intonationRange<2?'Мало изменений высоты голоса. Добавьте акценты на результате и запросе.':s.f0.intonationRange>8?'Большие перепады высоты голоса. Проверьте, выделяют ли они важные мысли.':'Высота голоса меняется. Проверьте, совпадают ли акценты с главными тезисами.'}</td></tr>
         <tr><td>Акценты громкостью</td><td>${s.loudness.dynRangeDb<8?'Изменения выражены слабо. Попробуйте выделить голосом ключевые фразы.':'Изменения громкости присутствуют. Это характеристика записи, а не громкости в зале.'}</td></tr>
-        <tr><td>Аудиозапись</td><td>${s.loudness.clippingPct>.05?'Есть перегрузка: уменьшите усиление микрофона.':s.loudness.meanDb<-40?'Тихий сигнал: проверьте микрофон, усиление и расстояние.':'Сильная перегрузка по уровню сигнала не обнаружена.'} Чёткость произношения слов отдельно не оценивается.</td></tr>
+        <tr><td>Аудиозапись</td><td>${s.loudness.clippingPct>.05?'Есть перегрузка. Уменьшите усиление микрофона.':s.loudness.lowLevel?'Сигнал записи очень слабый. Прослушайте запись и проверьте микрофон.':'Сигнал записан без сильной перегрузки.'} Чёткость произношения слов отдельно не оценивается.</td></tr>
       </table></div><div><h3>Что исправить в подаче</h3>${speechAdvice.length?'<ol class="precise-list">'+speechAdvice.map(x=>`<li><b>${esc(x.title)}</b><p>${esc(x.evidence)}</p><span class="action">${esc(x.action)}</span></li>`).join('')+'</ol>':'<p class="muted">По доступным признакам явных замечаний не выделено. Прослушайте запись и проверьте, слышен ли акцент на главном результате.</p>'}<h3>Где были паузы</h3>${s.pauses.list.length?'<div class="chip-list">'+s.pauses.list.slice().sort((a,b)=>b.dur-a.dur).slice(0,8).sort((a,b)=>a.start-b.start).map(x=>`<span class="chip">${fmtTime(x.start)}–${fmtTime(x.end)} · ${x.dur} с</span>`).join('')+'</div>':'<p class="muted small">Значимых остановок не найдено.</p>'}<p class="muted small">Смысловая пауза может быть полезна. Автоматическая оценка не отличает её от заминки по смыслу.</p></div></div></div>`);
     }else html.push('<div class="panel-card"><h2>Речь и голос</h2><p class="muted">Без аудиозаписи этот раздел не оценивается.</p></div>');
 
@@ -834,10 +834,10 @@ Traction: четыре пилота, два перешли в годовые к�
         <div><span class="clarity-title">Фразы, которым не хватает деталей</span><b class="${t.cliches.total?'clarity-attention':'clarity-good'}">${t.cliches.total}<small>найдено в тексте</small></b><p>${t.cliches.list.length?'Например: <strong>'+esc(t.cliches.list.slice(0,2).map(x=>'«'+x.word+'»').join(', '))+'</strong>. Объясните, что именно делает продукт и какую пользу получает клиент.':'Шаблонные выражения по словарю <strong>не найдены</strong>. Убедитесь, что главные обещания подкреплены примерами.'}</p></div>
         ${t.sentenceMetricsAvailable ? `<div><span class="clarity-title">Легко ли следить за мыслью</span><b class="${t.flesch<45?'clarity-attention':'clarity-good'}">${t.flesch>=60?'Легче':t.flesch>=45?'Средне':'Сложнее'}</b><p>${t.flesch>=60?'По длине слов и фраз текст выглядит <strong>несложным</strong>. Проверьте, понятны ли термины человеку вне вашей отрасли.':t.flesch>=45?'Сложность выглядит <strong>умеренной</strong>. Замените редкие термины простым объяснением, где это возможно.':'Слова и фразы выглядят <strong>сложными для восприятия</strong>. Сократите длинные объяснения и поясните термины.'} Это приблизительная оценка, без проверки смысла.</p></div>` : ''}
       </div><h3>Что влияет на убедительность и структуру</h3><div class="language-metrics">
-        <div><b>${t.hedges.total}</b><span>неопределённых формулировок</span><p><strong>Конкретика.</strong> Отделите гипотезы от фактов. Не заменяйте честное сомнение неподтверждённым обещанием.</p></div>
+        <div><b>${t.hedges.total}</b><span>неопределённых формулировок</span><p>Отделите гипотезы от фактов. Укажите, что ещё предстоит проверить.</p></div>
         <div><b>${t.facts.numbers}</b><span>числовых примеров</span><p><strong>Конкретика и полнота аргументов.</strong> ${t.facts.examples.length?esc(t.facts.examples.slice(0,3).join('; ')):'Добавьте измеримый результат.'} Программа не проверяет достоверность чисел.</p></div>
-        <div><b>${t.positive.total}</b><span>слов о пользе и результате</span><p><strong>Позитивный язык и конкретика.</strong> Учитывается доля таких слов; подкрепляйте их результатами и примерами.</p></div>
-        ${t.sentenceMetricsAvailable ? `<div><b>${t.facts.sentencesWithNumbers} / ${t.sentences}</b><span>предложений с числами</span><p><strong>Конкретика.</strong> Учитывается доля предложений с числовыми деталями. Это не подтверждение истинности фактов.</p></div>` : ''}
+        <div><b>${t.positive.total}</b><span>слов о пользе и результате</span><p><strong>Позитивный язык.</strong> Подкрепляйте такие формулировки результатами и примерами.</p></div>
+        ${t.sentenceMetricsAvailable ? `<div><b>${t.facts.sentencesWithNumbers} / ${t.sentences}</b><span>предложений с числами</span><p>Показывает, как числовые детали распределены по тексту.</p></div>` : ''}
         <div><b>${t.structure.filter(x=>x.required&&x.found).length} / ${t.structure.filter(x=>x.required).length}</b><span>необходимых тем обозначено</span><p><strong>Структура.</strong> Включены основные и отраслевые критерии. Ниже показано, какие темы требуют дополнения.</p></div>
       </div>
       <details class="language-details"><summary>Посмотреть найденные выражения</summary>${wordGroup('Позитивные слова',t.positive.list,'pos')}${wordGroup('Негативные слова',t.negative.list,'neg')}${wordGroup('Слова-сомнения',t.hedges.list,'hedge')}${wordGroup('Шаблонные выражения',t.cliches.list,'cliche')}${wordGroup('Уверенные формулировки',t.boosters.list,'booster')}</details>
@@ -875,11 +875,11 @@ Traction: четыре пилота, два перешли в годовые к�
     const missing=t.missing.filter(x=>x.required).map(x=>x.label);
     const explanations={
       structure:missing.length?'Не найдены маркеры тем: '+missing.join(', ')+'.':'Маркеры обязательных тем есть. Проверьте, что за каждым тезисом стоит объяснение.',
-      persuasion:'Найдено '+t.facts.numbers+' выражений с числами и '+t.hedges.total+' слов-сомнений. Добавляйте источник и период к каждому результату.',
+      persuasion:t.facts.numbers?'Числовых выражений: '+t.facts.numbers+'. В расшифровке: '+t.facts.examples.slice(0,3).join(', ')+'.':'Числа в расшифровке не найдены. Проверьте текст записи или добавьте измеримый результат.',
       clarity:t.sentenceMetricsAvailable?'Средняя длина предложения — '+t.avgSentenceLen+' слов. Вводных заполнителей — '+t.fillers.total+'. Примеры ниже в тексте.':'Частичная оценка по словам-заполнителям и шаблонным выражениям. В расшифровке недостаточно границ предложений.',
       positivity:'Слова результата: '+t.positive.total+'; слова о проблемах: '+t.negative.total+'. Негатив в описании проблемы клиента может быть уместен.',
       qready:'Учитываются основные темы, числовые примеры и профильные критерии отрасли «'+t.industryProfile.label+'». Полнота смысла автоматически не проверяется.',
-      confidence:s&&s.f0.sdSemitones<1.4?'Интонация меняется мало. Выделите голосом ключевой результат и запрос к аудитории.':'Оценка учитывает изменения интонации и акценты громкостью. Темп и слова-паразиты оцениваются отдельно.',
+      confidence:s&&s.f0.intonationRange<2?'Интонация меняется мало. Выделите голосом ключевой результат и запрос к аудитории.':'Оценка учитывает изменение высоты голоса на устойчивых участках речи.',
       timbre:'Оценка звукового сигнала зависит от микрофона, уровня записи и шума. Чёткость произношения отдельно не оценивается.',
       energy:s&&s.loudness.dynRangeDb<8?'Акценты громкостью выражены слабо. Подчеркните главный тезис голосом.':'Оценка отражает изменения громкости в записи, а не громкость в комнате.',
       pace:t.tempo.wordsPerMin?'По полной записи и расшифровке — '+t.tempo.wordsPerMin+' слов в минуту. Паузы учитываются.':'Без полной расшифровки темп приблизительный. Добавьте текст для точного подсчёта слов.'

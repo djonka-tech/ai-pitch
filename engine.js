@@ -120,6 +120,30 @@
     return { f0, r: clamp(y1, 0, 1) };
   }
 
+  function measureIntonation(f0, correlation, speech) {
+    const stable = [];
+    // One median per 120 ms. Isolated pitch estimates near pauses and
+    // unstable or unvoiced sounds should not inflate the range.
+    for (let start = 0; start < f0.length; start += 12) {
+      const pitches = [];
+      for (let i = start; i < Math.min(start + 12, f0.length); i++) {
+        // A low voice has fewer periods in a 40 ms window and lower correlation.
+        const minCorrelation = 0.68 - clamp((105 - f0[i]) * 0.006, 0, 0.21);
+        if (speech[i] && correlation[i] >= minCorrelation && f0[i] > 0) pitches.push(semitones(f0[i]));
+      }
+      if (pitches.length < 6 || percentile(pitches, 0.8) - percentile(pitches, 0.2) > 2.5) continue;
+      let pitch = median(pitches);
+      if (stable.length) {
+        // A change in harmonic strength can make the detector jump an octave.
+        const change = pitch - stable[stable.length - 1];
+        const octaves = Math.round(change / 12);
+        if (octaves && Math.abs(change - octaves * 12) < 1.2) pitch -= octaves * 12;
+      }
+      stable.push(pitch);
+    }
+    return stable.length < 6 ? null : round(percentile(stable, 0.9) - percentile(stable, 0.1), 2);
+  }
+
   /* ==================== АНАЛИЗ РЕЧИ ==================== */
   /**
    * @param {Float32Array} samples моно-сигнал
@@ -171,11 +195,11 @@
         ok: false, noSignal: true, durationSec: round(durationSec, 2), analyzedSec: round(durationSec, 2), trimmed: srcDur > maxSec,
         speechSec: 0, pauseSec: round(durationSec, 2), pauseRatio: 1, speechRatio: 0,
         pauses: { count: 0, list: [], longest: 0, mean: 0, long: 0, notable: 0, short: 0, perMin: 0 },
-        f0: { meanHz: 0, medianHz: 0, p5Hz: 0, p95Hz: 0, sdSemitones: 0, rangeSemitones: 0, voicedShare: 0, frames: 0, voiceType: '—' },
+        f0: { meanHz: 0, medianHz: 0, p5Hz: 0, p95Hz: 0, sdSemitones: 0, rangeSemitones: 0, intonationRange: null, voicedShare: 0, frames: 0, voiceType: '—' },
         timbre: { centroidHz: 0, centroidSd: 0, rolloffHz: 0, slopeDbOct: 0, hfRatio: 0, zcr: 0, hnrDb: 0, jitterPct: 0, shimmerPct: 0, flux: 0 },
         rate: { syllables: 0, syllablesPerMin: 0, articulationRate: 0, onsetVariabilityMs: 0, estimatedWordsPerMin: 0 },
         prosody: { phrases: 0, up: 0, down: 0, flat: 0, upShare: 0, downShare: 0, flatShare: 0, list: [] },
-        loudness: { meanDb: 0, sdDb: 0, p10Db: 0, p90Db: 0, dynRangeDb: 0, peakDb: round(db(peak), 1), clippingPct: 0, noiseFloorDb: round(noiseFloorDb, 1), snrDb: 0 },
+        loudness: { meanDb: 0, sdDb: 0, p10Db: 0, p90Db: 0, dynRangeDb: 0, peakDb: round(db(peak), 1), clippingPct: 0, noiseFloorDb: round(noiseFloorDb, 1), snrDb: 0, lowLevel: false },
         timeline: { t: [], f0st: [], db: [], speech: [] },
         debug: { frames: nFrames, thrDb: round(thrDb, 1), elapsedMs: Math.round(now() - T0) }
       };
@@ -246,6 +270,7 @@
     const f0mean = mean(f0vals), f0med = median(f0vals);
     const stSd = stdev(stVals), stLo = percentile(stVals, 0.05), stHi = percentile(stVals, 0.95);
     const voicedShare = nF0 ? f0vals.length / nF0 : 0;
+    const intonationRange = measureIntonation(f0, rraw, speech);
 
     // джиттер и шиммер (локальные)
     let jSum = 0, jN = 0, sSum = 0, sN = 0;
@@ -376,7 +401,8 @@
       peakDb: round(db(peak), 1),
       clippingPct: round(clipCount / Math.max(1, x.length) * 100, 3),
       noiseFloorDb: round(noiseFloorDb, 1),
-      snrDb: round(mean(speechDb) - noiseFloorDb, 1)
+      snrDb: round(mean(speechDb) - noiseFloorDb, 1),
+      lowLevel: loudDb < -55 && peak < 0.01
     };
 
     // 11. Таймлайн для графиков (~25 к/с)
@@ -414,7 +440,7 @@
       f0: {
         meanHz: round(f0mean, 1), medianHz: round(f0med, 1),
         p5Hz: round(percentile(f0vals, 0.05), 1), p95Hz: round(percentile(f0vals, 0.95), 1),
-        sdSemitones: round(stSd, 2), rangeSemitones: round(stHi - stLo, 2),
+        sdSemitones: round(stSd, 2), rangeSemitones: round(stHi - stLo, 2), intonationRange,
         voicedShare: round(voicedShare, 3), frames: f0vals.length,
         voiceType: f0med && f0med < 120 ? 'низкий' : f0med && f0med < 175 ? 'средний' : 'высокий'
       },
@@ -463,6 +489,23 @@
     return parts;
   }
   function syllablesIn(word) { const m = word.toLowerCase().match(VOWELS); return Math.max(1, m ? m.length : 1); }
+
+  const numberUnits = '(?:один|одна|одно|одну|одного|одной|дв(?:а|е|ух)|тр(?:и|[её]х)|четыр(?:е|[её]х)|пять|пяти|шесть|шести|семь|семи|восемь|восьми|девять|девяти|нол[ья]|нул[ья])';
+  const numberTeens = '(?:десят[ьи]|(?:один|две|три|четыр|пят|шест|сем|восем|девят)надцат[ьи])';
+  const numberTens = '(?:двадцат[ьи]|тридцат[ьи]|сорок[а]?|(?:пять|шесть|семь|восемь)десят|(?:пяти|шести|семи|восьми)десяти|девяност[оа])';
+  const numberHundreds = '(?:сто|ста|двести|триста|четыреста|пятьсот|шестьсот|семьсот|восемьсот|девятьсот)';
+  const underHundred = `(?:${numberTens}(?:\\s+${numberUnits})?|${numberTeens}|${numberUnits})`;
+  const cardinal = `(?:\\d+(?:[ \\u00a0\\u202f]\\d{3})*(?:[.,]\\d+)?|${numberHundreds}(?:\\s+${underHundred})?|${underHundred})`;
+  const numberScale = '(?:тысяч[аиу]?|миллион(?:а|ов)?|миллиард(?:а|ов)?|тыс|млн|млрд)';
+  const numberMeasure = '(?:%|₽|руб[а-яё]*|процент[а-яё]*|раз(?:а|ов)?|секунд[а-яё]*|минут[а-яё]*|час[а-яё]*|короб[а-яё]*|клиент[а-яё]*|пользовател[а-яё]*|месяц[а-яё]*|лет|год[а-яё]*|день|дней|человек[а-яё]*|штук[а-яё]*|балл[а-яё]*|киловатт[а-яё]*|квт|тонн[а-яё]*|килограмм[а-яё]*)';
+  const numberPattern = new RegExp(`(^|[^а-яёa-z0-9_])((?:[×хx]\\s*)?(?:${cardinal}(?:\\s+${numberScale})+(?:\\s+${cardinal})?|${cardinal})(?:\\s*${numberMeasure})?)(?![а-яёa-z0-9_])`, 'gi');
+
+  function collectNumbers(text) {
+    return Array.from(text.matchAll(numberPattern), match => {
+      const start = match.index + match[1].length;
+      return { text: match[2], start, end: start + match[2].length };
+    });
+  }
 
   function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   /** регулярка по основе/фразе: допускает падежные окончания */
@@ -599,14 +642,12 @@
     const filWeighted = L.FILLERS.reduce((s, f) => { const hit = fil.list.find((x) => x.word === f.f); return s + (hit ? hit.count * f.w : 0); }, 0);
     const hedWeighted = L.HEDGES.reduce((s, f) => { const hit = hed.list.find((x) => x.word === f.f); return s + (hit ? hit.count * f.w : 0); }, 0);
 
-    // цифры и факты
-    const numRe = /(?:\d+[.,]?\d*\s*(?:%|₽|руб|р\.|млн|млрд|тыс|к\b|раз|х|икс|секунд|минут|час|балл|процент|квт|киловатт|тонн|килограмм|пользовател\w*|клиент\w*|месяц\w*|год\w*|дн\w*|человек\w*|штук\w*))|(?:[хx×]\s?\d+[.,]?\d*)|(?:\d+[.,]?\d*\s?(?:в|во)\s?\d+)/gi;
-    const numbers = (clean.match(numRe) || []);
+    const numbers = collectNumbers(clean);
     const anyDigits = (clean.match(/\d+/g) || []);
     const factDensity = words ? numbers.length / words * 100 : 0;
 
     // предложения с цифрами
-    const sentWithNum = sentenceMetricsAvailable ? sentences.filter((s) => /\d/.test(s.text)).length : null;
+    const sentWithNum = sentenceMetricsAvailable ? sentences.filter(s => numbers.some(n => n.start >= s.start && n.start < s.end)).length : null;
 
     // Core structure plus sector-specific criteria. Quantified criteria need a
     // matching metric and a number in the same sentence, not elsewhere in the pitch.
@@ -629,7 +670,7 @@
     }).concat(industryProfile.criteria);
     const structure=definitions.map(b=>{
       const hit=collect(clean,b.stems,'block');
-      const relevant=hit.marks.filter(mark=>sentences.some(sentence=>mark.start>=sentence.start && mark.start<sentence.end && (!b.quantified || /\d/.test(clean.slice(Math.max(sentence.start,mark.start-50),Math.min(sentence.end,mark.end+70))))));
+      const relevant=hit.marks.filter(mark=>sentences.some(sentence=>mark.start>=sentence.start && mark.start<sentence.end && (!b.quantified || numbers.some(n=>n.start>=Math.max(sentence.start,mark.start-50) && n.start<Math.min(sentence.end,mark.end+70)))));
       const supported=sentences.filter(sentence=>relevant.some(mark=>mark.start>=sentence.start && mark.start<sentence.end));
       const found=(b.sector||b.quantified) ? supported.length>0 : hit.total>0;
       const marks=(b.sector||b.quantified) ? relevant : hit.marks;
@@ -671,7 +712,7 @@
       hedges: { total: hed.total, unique: hed.unique, list: hed.list, marks: hed.marks, per100: words ? round(hed.total / words * 100, 2) : 0, weighted: hedWeighted },
       boosters: { total: boo.total, unique: boo.unique, list: boo.list, marks: boo.marks, per100: words ? round(boo.total / words * 100, 2) : 0 },
       cliches: { total: cli.total, unique: cli.unique, list: cli.list, marks: cli.marks, per100: words ? round(cli.total / words * 100, 2) : 0 },
-      facts: { numbers: numbers.length, digits: anyDigits.length, density: round(factDensity, 2), sentencesWithNumbers: sentWithNum, examples: numbers.slice(0, 12) },
+      facts: { numbers: numbers.length, distinctNumbers: new Set(numbers.map(n => n.text.toLowerCase().replace(/\s+/g, ' '))).size, digits: anyDigits.length, density: round(factDensity, 2), sentencesWithNumbers: sentWithNum, examples: numbers.slice(0, 12).map(n=>n.text) },
       structure,
       structureCoverage: round(structure.filter((s) => s.found).reduce((a, b) => a + b.weight, 0) / structure.reduce((a, b) => a + b.weight, 0), 3),
       missing: structure.filter((s) => !s.found).map((s) => ({ key: s.key, label: s.label, required: s.required, sector: s.sector, quantified: s.quantified, suggestion: s.suggestion })),
@@ -718,15 +759,10 @@
     });
 
     const fd = t.facts.density;
-    const factPart = bandScore(fd, 1.5, 8, 1.6);
-    const hedgePart = Math.round(clamp(100 - t.hedges.per100 * 45, 0, 100));
-    const boostPart = Math.round(clamp(t.boosters.per100 / 1.5 * 100, 0, 100));
-    let persuasion = 0.3 * factPart + 0.25 * hedgePart + 0.15 * boostPart + 0.1 * Math.round(clamp(t.positive.density / 3 * 100, 0, 100));
-    if (t.sentenceMetricsAvailable) persuasion += 0.2 * Math.round(t.facts.sentencesWithNumbers / t.sentences * 100);
-    else persuasion /= 0.8;
+    const persuasion = 80 * clamp(t.facts.distinctNumbers / 5, 0, 1) + 20 * clamp(fd / 2.5, 0, 1);
     axes.push({
       key: 'persuasion', label: 'Убедительность и конкретика', score: Math.round(persuasion), group: 'text',
-      detail: `Цифр и метрик: ${t.facts.numbers} (${fd} на 100 слов). Хеджей: ${t.hedges.total}. Утверждений-усилителей: ${t.boosters.total}.`,
+      detail: `Найдено числовых выражений: ${t.facts.numbers} (${fd} на 100 слов). Балл учитывает разнообразие и частоту числовых деталей.`,
       notes: fd < 1.5 ? ['Мало измеримых фактов: жюри запомнит эмоции, а не результат'] : []
     });
 
@@ -778,20 +814,14 @@
     if (!s) return axes;
     const f = s.f0, ti = s.timbre, lo = s.loudness, r = s.rate, p = s.pauses, pr = s.prosody;
 
-    // Expressiveness measures vocal variation, not filler vocabulary, pace or
-    // frame-to-frame jitter. Those belong to separate axes and feedback.
     const pace = (t && t.tempo.wordsPerMin) || r.estimatedWordsPerMin;
-    const intonationScore=clamp(100*Math.min(f.sdSemitones/1.8,1)-Math.max(0,f.sdSemitones-5)*8,0,100);
-    const dynamicsScore=bandScore(lo.dynRangeDb,6,24,10);
-    let confidence=Math.round(.75*intonationScore+.25*dynamicsScore);
-    if(f.sdSemitones<.6)confidence=Math.min(confidence,45);
-    else if(f.sdSemitones<1.2)confidence=Math.min(confidence,60);
+    const range = f.intonationRange;
+    const confidence = range == null ? 0 : Math.round(15 + 85 * clamp((range - 0.5) / 4, 0, 1));
     const cNotes=[];
-    if(f.sdSemitones<1.4)cNotes.push('Интонация меняется мало: выделите голосом главный результат и запрос.');
-    if(f.sdSemitones>5)cNotes.push('Большие перепады тона: проверьте, помогают ли они выделить важные мысли.');
-    if(lo.dynRangeDb<6)cNotes.push('Акценты громкостью выражены слабо.');
+    if(range != null && range < 2)cNotes.push('Интонация меняется мало: выделите голосом главный результат и запрос.');
+    if(range > 8)cNotes.push('Большие перепады тона: проверьте, помогают ли они выделить важные мысли.');
     axes.push({key:'confidence',label:'Выразительность',score:confidence,group:'speech',
-      detail:'Оценка изменений интонации и динамики голоса. Слова-паразиты и скорость речи учитываются отдельно.',notes:cNotes});
+      detail:'Оценка изменений высоты голоса на устойчивых участках речи.',notes:cNotes});
 
     // тембр и дикция
     const hnrScore = Math.round(clamp((ti.hnrDb - 6) / 16 * 100, 0, 100));
@@ -820,7 +850,7 @@
     const clipPen = clamp(lo.clippingPct * 60, 0, 30);
     const energy = Math.round(clamp(0.45 * loudScore + 0.35 * dynScore + 0.2 * bandScore(pace, 110, 175, 50) - clipPen, 0, 100));
     const eNotes = [];
-    if (lo.meanDb < -40) eNotes.push(`Низкий уровень записи (${lo.meanDb} dBFS). Проверьте усиление микрофона; это не оценка громкости в зале.`);
+    if (lo.lowLevel) eNotes.push('Сигнал записи очень слабый. Прослушайте её и проверьте усиление микрофона.');
     if (lo.peakDb > -1) eNotes.push('Уровень близок к цифровому пределу: уменьшите усиление микрофона.');
     if (lo.dynRangeDb < 8) eNotes.push('Плоская динамика: нет акцентов громкостью');
     if (lo.clippingPct > 0.05) eNotes.push('Есть клиппинг — микрофон перегружен');
@@ -993,11 +1023,11 @@
       if (t.structure.find((x) => x.key === 'ask' && x.found)) st('Есть запрос (Ask)', 'Питч завершается конкретным запросом.');
     }
     if (s) {
-      if (s.f0.sdSemitones >= 1.5 && s.f0.sdSemitones <= 3.8) st('Живая интонация', `Вариативность тона ${s.f0.sdSemitones} полутона — голос звучит вовлечённо.`);
-      else if (s.f0.sdSemitones < 1.5) wk('Монотонность', `Вариативность тона ${s.f0.sdSemitones} полутона.`, 'Выделяйте голосом 3 главные цифры питча; понижайте тон в конце утверждений.');
+      if (s.f0.intonationRange >= 3 && s.f0.intonationRange <= 8) st('Живая интонация', 'Высота голоса заметно меняется на устойчивых участках речи.');
+      else if (s.f0.intonationRange != null && s.f0.intonationRange < 2) wk('Монотонность', 'Высота голоса мало меняется на устойчивых участках речи.', 'Выделяйте голосом 3 главные цифры питча; понижайте тон в конце утверждений.');
       if (s.timbre.hnrDb >= 16) st('Чистый голос', `HNR ${s.timbre.hnrDb} дБ — гармоничность записи высокая; разборчивость слов отдельно не проверялась.`);
       else wk('Голос с шумом', `HNR ${s.timbre.hnrDb} дБ, джиттер ${s.timbre.jitterPct}%.`, 'Разминка голоса, опора на дыхание, вода, снижение темпа в начале.');
-      if (s.loudness.meanDb < -40) wk('Низкий уровень записи', `Уровень ${s.loudness.meanDb} dBFS.`, 'Проверьте микрофон и его усиление. Громкость в комнате здесь не измеряется.');
+      if (s.loudness.lowLevel) wk('Очень слабый сигнал записи', 'Даже наиболее громкие участки записались на низком уровне.', 'Прослушайте запись и при необходимости проверьте усиление микрофона.');
       if (s.pauseRatio > 0.3) wk('Много пауз', `Паузы занимают ${pct(s.pauseRatio)}% времени.`, 'Проговорите переходы между слайдами до автоматизма.');
       if (s.pauses.long > 0) wk('Длинные паузы', `${s.pauses.long} пауз длиннее 1,5 с (максимум ${s.pauses.longest} с).`, 'Держите перед глазами план из 5 слов, а не полный текст.');
       if (s.prosody.upShare > 0.3) wk('Восходящие окончания', `${pct(s.prosody.upShare)}% фраз заканчиваются подъёмом тона.`, 'В конце утверждений опускайте тон — это звучит как факт.');
@@ -1044,7 +1074,7 @@
     scores.forEach((a) => { a.available = true; });
     if (!text.hasText) scores.forEach((a) => { if (a.group === 'text') a.available = false; });
     if (speech && (speech.durationSec < 8 || speech.speechSec < 3 || speech.f0.frames < 30)) scores.forEach(a => { if (a.group === 'speech') a.available = false; });
-    if(speech && speech.f0.voicedShare<.12)scores.forEach(a=>{if(a.key==='confidence'){a.available=false;a.notes=['Недостаточно участков с определяемой высотой голоса.'];}});
+    if(speech && speech.f0.intonationRange == null)scores.forEach(a=>{if(a.key==='confidence'){a.available=false;a.notes=['Недостаточно участков с устойчивой высотой голоса.'];}});
     if (!speech) scores.forEach((a) => { if (a.group === 'speech') a.available = false; });
 
     const avail = scores.filter((a) => a.available);
@@ -1116,7 +1146,8 @@
     }
     if (s) {
       const pace = (t && t.tempo.wordsPerMin) || s.rate.estimatedWordsPerMin;
-      out.push(`Речь: ${s.durationSec} с, ${describeTempo(s, t)}, паузы ${pct(s.pauseRatio)}% времени, вариативность тона ${s.f0.sdSemitones} полутона, HNR ${s.timbre.hnrDb} дБ.`);
+      const intonation = s.f0.intonationRange == null ? 'для оценки интонации мало данных' : `диапазон устойчивых изменений высоты голоса ${s.f0.intonationRange} полутона`;
+      out.push(`Речь: ${s.durationSec} с, ${describeTempo(s, t)}, паузы ${pct(s.pauseRatio)}% времени, ${intonation}, HNR ${s.timbre.hnrDb} дБ.`);
     }
     const worst = report.scores.filter((a) => a.available !== false).slice().sort((a, b) => a.score - b.score)[0];
     if (worst) out.push(`Главная зона роста: «${worst.label}» (${worst.score}/100). ${worst.notes[0] || worst.detail}`);
@@ -1226,7 +1257,12 @@
       items.push({label:'Связь с вопросом',ok:shared.length>0,advice:shared.length?'Найдены совпадения с темой: '+shared.join(', ')+'. Это подсказка по словам; проверьте, что первая фраза прямо отвечает на вопрос.':'Явных совпадений с темой мало. Начните с прямого ответа и сверьтесь с планом. Пересказ своими словами тоже может быть уместным.'});
     }else items.push({label:'Содержание пока не оценено',ok:false,advice:'Распознавание не вернуло текст. Прослушайте запись, введите расшифровку и повторите разбор.'});
     if(duration)items.push({label:'Время ответа',ok:duration>=15&&duration<=62,advice:duration<15?'Ответ короче 15 секунд. Если мысль не раскрыта, добавьте обоснование и пример.':duration>62?'Ответ вышел за минуту. Уберите вступление и оставьте главное.':'Ответ уложился в минуту. Проверьте, что вы успели сделать вывод.'});
-    if(speech&&!speech.noSignal)items.push({label:'Подача',ok:speech.pauseRatio<.35&&speech.f0.sdSemitones>=1.2,advice:speech.pauseRatio>=.35?'Заметны затяжные остановки. Запишите три опорных слова и повторите ответ.':speech.f0.sdSemitones<1.2?'Добавьте голосовой акцент на главном доказательстве и выводе.':'Сохраняйте ритм. Выделяйте голосом основной аргумент.'});
+    if(speech&&!speech.noSignal){
+      const manyPauses = speech.pauseRatio >= .35;
+      const range = speech.f0.intonationRange;
+      const flat = range != null && range < 2;
+      items.push({label:'Подача',ok:!manyPauses&&!flat,advice:manyPauses?'Заметны затяжные остановки. Запишите три опорных слова и повторите ответ.':flat?'Добавьте голосовой акцент на главном доказательстве и выводе.':range==null?'Для оценки интонации недостаточно устойчивых участков голоса.':'Сохраняйте ритм. Выделяйте голосом основной аргумент.'});
+    }
     else if(speech?.noSignal)items.push({label:'Проверьте микрофон',ok:false,advice:'В записи не обнаружен различимый голос. Выберите другой микрофон и повторите запись.'});
     return {title:t.hasText?'Что улучшить в ответе':'Сначала добавьте расшифровку',note:'Локальный разбор по признакам речи и текста. Он не проверяет истинность фактов и полноту ответа по смыслу.',items};
   }
@@ -1263,7 +1299,7 @@
     if(s&&report.total.deliveryScore!=null){
       const longest=s.pauses.list.slice().sort((a,b)=>b.dur-a.dur)[0];
       if(longest&&longest.dur>1.5)add(92,'Проверьте остановку на '+clock(longest.start),'Внутри выступления обнаружена пауза '+longest.dur+' с ('+clock(longest.start)+'–'+clock(longest.end)+').','Прослушайте этот участок. Если это заминка, заранее запишите переход к следующей мысли; смысловую паузу можно оставить.');
-      if(s.f0.sdSemitones<1.4)add(90,'Добавьте акценты голосом','Высота тона меняется мало на проанализированном участке.','Выберите три фразы: польза клиенту, главный результат, запрос к жюри. Произнесите их с отдельным акцентом и короткой паузой после.');
+      if(s.f0.intonationRange != null && s.f0.intonationRange < 2)add(90,'Добавьте акценты голосом','Высота тона меняется мало на устойчивых участках речи.','Выберите три фразы: польза клиенту, главный результат, запрос к жюри. Произнесите их с отдельным акцентом и короткой паузой после.');
       const pace=t.tempo.wordsPerMin;
       if(pace&&pace>175)add(87,'Замедлитесь на цифрах','По тексту и полной длительности получается '+pace+' слов в минуту.','Повторите фрагмент с результатами медленнее и сделайте паузу после каждого ключевого числа.');
       else if(pace&&pace<110)add(87,'Сократите затянутое объяснение','По тексту и полной длительности получается '+pace+' слов в минуту.','Уберите повтор одного тезиса и длинное вступление. Сравните две записи одного и того же фрагмента.');
