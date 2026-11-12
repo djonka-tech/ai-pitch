@@ -454,7 +454,7 @@
   }
   function splitSentences(text) {
     const parts = [];
-    const re = /[^.!?…\n]+[.!?…]*/g;
+    const re = /(?:\d+(?:\.\d+)+|[^.!?…\n])+[.!?…]*/g;
     let m;
     while ((m = re.exec(text))) {
       const s = m[0].trim();
@@ -579,8 +579,13 @@
     const sentLens = sentences.map((s) => tokenize(s.text).length).filter((n) => n > 0);
     const syllTotal = tokens.reduce((s, t) => s + syllablesIn(t.norm), 0);
     const asl = sentLens.length ? mean(sentLens) : 0;
+    const isTranscript = ctx.inputSource === 'mic' || ctx.inputSource === 'file';
+    // Long recognition chunks can contain several sentences without punctuation.
+    const sentenceMetricsAvailable = !!sentLens.length && !(isTranscript && words > 24 && (sentLens.length === 1 || asl > 35));
+    const cueTexts = (ctx.cues || []).map(cue => (cue.text || '').trim()).filter(Boolean);
+    const recognitionPhrases = !sentenceMetricsAvailable && cueTexts.length > 1 && cueTexts.join(' ') === clean ? cueTexts.length : 0;
     const asw = words ? syllTotal / words : 0;
-    const flesch = words && sentLens.length ? 206.835 - 1.3 * asl - 60.1 * asw : 0;
+    const flesch = sentenceMetricsAvailable ? 206.835 - 1.3 * asl - 60.1 * asw : null;
 
     const pos = collect(clean, L.POSITIVE, 'pos');
     const neg = collect(clean, L.NEGATIVE, 'neg');
@@ -601,7 +606,7 @@
     const factDensity = words ? numbers.length / words * 100 : 0;
 
     // предложения с цифрами
-    const sentWithNum = sentences.filter((s) => /\d/.test(s.text)).length;
+    const sentWithNum = sentenceMetricsAvailable ? sentences.filter((s) => /\d/.test(s.text)).length : null;
 
     // Core structure plus sector-specific criteria. Quantified criteria need a
     // matching metric and a number in the same sentence, not elsewhere in the pitch.
@@ -646,7 +651,7 @@
     const third = Math.max(1, Math.floor(clean.length * 0.33));
     const negEarly = neg.marks.filter((m) => m.start < third).length;
 
-    const longSentences = sentences.filter((s) => tokenize(s.text).length > 24);
+    const longSentences = sentenceMetricsAvailable ? sentences.filter((s) => tokenize(s.text).length > 24) : [];
     const wpmFromAudio = words > 0 && ctx.speech && !ctx.speech.trimmed && ctx.speech.durationSec > 3 ? round(words / (ctx.speech.durationSec / 60), 0) : null;
     const wpmFromDuration = !ctx.speech && ctx.durationSec > 3 && words ? round(words / (ctx.durationSec / 60), 0) : null;
 
@@ -654,9 +659,11 @@
       hasText: words > 0,
       industryProfile:{key:industryProfile.key,label:industryProfile.label,criteria:industryProfile.criteria.map(x=>x.key)},
       chars: clean.length, words, sentences: sentences.length, uniqueWords: new Set(wordLowers).size,
-      avgSentenceLen: round(asl, 1), maxSentenceLen: sentLens.length ? Math.max.apply(null, sentLens) : 0,
-      syllables: syllTotal, flesch: round(flesch, 1),
-      readability: flesch >= 60 ? 'легко воспринимается на слух' : flesch >= 45 ? 'средняя сложность' : 'тяжело для восприятия на слух',
+      sentenceMetricsAvailable, recognitionPhrases,
+      avgSentenceLen: sentenceMetricsAvailable ? round(asl, 1) : null,
+      maxSentenceLen: sentenceMetricsAvailable ? Math.max(...sentLens) : null,
+      syllables: syllTotal, flesch: flesch == null ? null : round(flesch, 1),
+      readability: flesch == null ? null : flesch >= 60 ? 'легко воспринимается на слух' : flesch >= 45 ? 'средняя сложность' : 'тяжело для восприятия на слух',
       lexicalDiversity: words ? round(new Set(wordLowers).size / words, 3) : 0,
       positive: { total: pos.total, unique: pos.unique, list: pos.list.slice(0, 40), marks: pos.marks, density: words ? round(pos.total / words * 100, 2) : 0, weighted: posWeighted },
       negative: { total: neg.total, unique: neg.unique, list: neg.list.slice(0, 40), marks: neg.marks, density: words ? round(neg.total / words * 100, 2) : 0, earlyShare: neg.total ? round(negEarly / neg.total, 2) : 0 },
@@ -714,24 +721,22 @@
     const factPart = bandScore(fd, 1.5, 8, 1.6);
     const hedgePart = Math.round(clamp(100 - t.hedges.per100 * 45, 0, 100));
     const boostPart = Math.round(clamp(t.boosters.per100 / 1.5 * 100, 0, 100));
-    const specPart = t.sentences ? Math.round(t.facts.sentencesWithNumbers / t.sentences * 100) : 0;
-    const persuasion = Math.round(0.3 * factPart + 0.25 * hedgePart + 0.15 * boostPart + 0.2 * specPart + 0.1 * Math.round(clamp(t.positive.density / 3 * 100, 0, 100)));
+    let persuasion = 0.3 * factPart + 0.25 * hedgePart + 0.15 * boostPart + 0.1 * Math.round(clamp(t.positive.density / 3 * 100, 0, 100));
+    if (t.sentenceMetricsAvailable) persuasion += 0.2 * Math.round(t.facts.sentencesWithNumbers / t.sentences * 100);
+    else persuasion /= 0.8;
     axes.push({
-      key: 'persuasion', label: 'Убедительность и конкретика', score: persuasion, group: 'text',
+      key: 'persuasion', label: 'Убедительность и конкретика', score: Math.round(persuasion), group: 'text',
       detail: `Цифр и метрик: ${t.facts.numbers} (${fd} на 100 слов). Хеджей: ${t.hedges.total}. Утверждений-усилителей: ${t.boosters.total}.`,
       notes: fd < 1.5 ? ['Мало измеримых фактов: жюри запомнит эмоции, а не результат'] : []
     });
 
-    const clarParts = [
-      100 - clamp(t.fillers.per100 * 55, 0, 70),
-      bandScore(t.avgSentenceLen, 8, 20, 8),
-      100 - clamp(t.cliches.per100 * 35, 0, 60),
-      bandScore(t.flesch, 45, 75, 18)
-    ];
-    const clarity = Math.round(0.35 * clarParts[0] + 0.25 * clarParts[1] + 0.2 * clarParts[2] + 0.2 * clarParts[3]);
+    let clarity = 0.35 * (100 - clamp(t.fillers.per100 * 55, 0, 70)) + 0.2 * (100 - clamp(t.cliches.per100 * 35, 0, 60));
+    if (t.sentenceMetricsAvailable) clarity += 0.25 * bandScore(t.avgSentenceLen, 8, 20, 8) + 0.2 * bandScore(t.flesch, 45, 75, 18);
+    else clarity /= 0.55;
+    const sentenceDetail = t.sentenceMetricsAvailable ? `Средняя длина предложения: ${t.avgSentenceLen} слов. Индекс читаемости: ${t.flesch} (${t.readability}).` : 'Недостаточно границ предложений для оценки длины и читаемости.';
     axes.push({
-      key: 'clarity', label: 'Ясность и чистота языка', score: clarity, group: 'text',
-      detail: `Слов-паразитов: ${t.fillers.total} (${t.fillers.per100} на 100 слов). Средняя длина предложения: ${t.avgSentenceLen} слов. Штампов: ${t.cliches.total}. Индекс читаемости: ${t.flesch} (${t.readability}).`,
+      key: 'clarity', label: 'Ясность и чистота языка', score: Math.round(clarity), group: 'text',
+      detail: `Слов-паразитов: ${t.fillers.total} (${t.fillers.per100} на 100 слов). Штампов: ${t.cliches.total}. ${sentenceDetail}`,
       notes: t.fillers.per100 > 1.5 ? ['Много слов-паразитов: они крадут время и вес фраз'] : []
     });
 
@@ -829,8 +834,8 @@
     const paceIdeal = bandScore(pace, 125, 165, 42);
     const pauseRatioScore = bandScore(s.pauseRatio, 0.08, 0.24, 0.12);
     const pauseCountScore = bandScore(p.perMin, 5, 16, 6);
-    const sentScore = t ? bandScore(t.avgSentenceLen, 8, 19, 7) : 100;
-    const pacePauses = Math.round(0.4 * paceIdeal + 0.25 * pauseRatioScore + 0.15 * pauseCountScore + 0.2 * sentScore);
+    const rhythm = 0.4 * paceIdeal + 0.25 * pauseRatioScore + 0.15 * pauseCountScore;
+    const pacePauses = Math.round(t?.sentenceMetricsAvailable ? rhythm + 0.2 * bandScore(t.avgSentenceLen, 8, 19, 7) : rhythm / 0.8);
     const ppNotes = [];
     if (pace > 175) ppNotes.push(`Быстрый темп (${pace} слов/мин): аудитория не успевает осмыслить цифры`);
     if (pace < 110) ppNotes.push(`Медленный темп (${pace} слов/мин): питч рискует не уложиться в регламент`);
@@ -859,7 +864,7 @@
       if(after!==sentence&&tokenize(after).length>=3)out.push({title:'Сократить фразу',before:sentence,after,reason:'Убраны словарные заполнители или длинное вводное выражение. Проверьте, что смысл сохранён.'});
       else if(collect(sentence,L.CLICHES,'cliche').total)out.push({title:'Уточнить общую характеристику',before:sentence,advice:'Замените общую характеристику конкретной функцией, сравнением или подтверждённым результатом. Например: «пользователь делает [действие] за [время]».',reason:'Автоматически придумать вашу функцию и результат нельзя.'});
       else if(collect(sentence,L.HEDGES,'hedge').total)out.push({title:'Уточнить гипотезу',before:sentence,advice:'Сохраните неопределённость, если результат ещё не подтверждён. Добавьте, что проверите, к какому сроку и по какой метрике.',reason:'Слова-сомнения не удалены автоматически, чтобы не превратить гипотезу в факт.'});
-      else if(tokenize(sentence).length>24)out.push({title:'Разделить длинную мысль',before:sentence,advice:'Разделите предложение на проблему, действие и результат. Не удаляйте условия и ограничения.',reason:'Для точного разделения длинной фразы требуется проверить её смысл.'});
+      else if(t.sentenceMetricsAvailable&&tokenize(sentence).length>24)out.push({title:'Разделить длинную мысль',before:sentence,advice:'Разделите предложение на проблему, действие и результат. Не удаляйте условия и ограничения.',reason:'Для точного разделения длинной фразы требуется проверить её смысл.'});
       if(out.length>=5)break;
     }
     return out;
@@ -1030,7 +1035,7 @@
       if (speech.noSignal) { noSignal = true; speech = null; }
     }
     progress(0.7, 'Анализ текста');
-    const text = analyzeText(input.text || '', { topic: meta.topic, industry: meta.industry, durationSec: input.durationSec, speech });
+    const text = analyzeText(input.text || '', { topic: meta.topic, industry: meta.industry, inputSource: meta.inputSource, cues: input.cues, durationSec: input.durationSec, speech });
     const durationSec = (speech && speech.durationSec) || audioDuration || input.durationSec || 0;
 
     progress(0.82, 'Оценки и рекомендации');
@@ -1073,7 +1078,7 @@
       }),
       transcript: {
         text: input.text || '',
-        words: text.words, sentences: text.sentences,
+        words: text.words, sentences: text.sentenceMetricsAvailable ? text.sentences : null,
         cues: input.cues || null
       },
       text, speech, scores,
