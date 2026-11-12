@@ -120,21 +120,29 @@
     return { f0, r: clamp(y1, 0, 1) };
   }
 
-  function reliablePitch(hz, correlation) {
+  function reliablePitch(hz, correlation, relaxed) {
     // A low voice has fewer periods in a 40 ms window and lower correlation.
-    return hz > 0 && correlation >= 0.68 - clamp((105 - hz) * 0.006, 0, 0.21);
+    const minimum = 0.68 - clamp((105 - hz) * 0.006, 0, 0.21);
+    return hz > 0 && correlation >= (relaxed ? Math.max(0.36, minimum - 0.15) : minimum);
   }
 
-  function measureIntonation(f0, correlation, speech) {
+  function collectPitchWindows(f0, correlation, speech, relaxed) {
     const stable = [];
-    // One median per 120 ms. Isolated pitch estimates near pauses and
-    // unstable or unvoiced sounds should not inflate the range.
-    for (let start = 0; start < f0.length; start += 12) {
+    const step = relaxed ? 5 : 12;
+    const width = relaxed ? 8 : 12;
+    for (let start = 0; start < f0.length; start += step) {
       const pitches = [];
-      for (let i = start; i < Math.min(start + 12, f0.length); i++) {
-        if (speech[i] && reliablePitch(f0[i], correlation[i])) pitches.push(semitones(f0[i]));
+      for (let i = start; i < Math.min(start + width, f0.length); i++) {
+        if (!speech[i] || !reliablePitch(f0[i], correlation[i], relaxed)) {
+          if (relaxed) pitches.length = 0;
+          continue;
+        }
+        const pitch = semitones(f0[i]);
+        if (relaxed && pitches.length && Math.abs(pitch - pitches[0]) > 2) pitches.length = 0;
+        pitches.push(pitch);
+        if (relaxed && pitches.length === 4) break;
       }
-      if (pitches.length < 6 || percentile(pitches, 0.8) - percentile(pitches, 0.2) > 2.5) continue;
+      if (pitches.length < (relaxed ? 4 : 6) || percentile(pitches, 0.8) - percentile(pitches, 0.2) > 2.5) continue;
       let pitch = median(pitches);
       if (stable.length) {
         // A change in harmonic strength can make the detector jump an octave.
@@ -144,18 +152,31 @@
       }
       stable.push(pitch);
     }
-    return stable.length < 6 ? null : round(percentile(stable, 0.9) - percentile(stable, 0.1), 2);
+    return stable;
   }
 
-  function measureAccentRange(levels, speech, f0, correlation, threshold) {
+  function measureIntonation(f0, rawPitch, correlation, speech) {
+    let stable = collectPitchWindows(f0, correlation, speech, false);
+    const approximate = stable.length < Math.max(6, Math.ceil(sum(speech) / 100));
+    // Short syllables can leave fewer strong frames. Require consecutive
+    // agreement in the original estimates before accepting weaker evidence.
+    if (approximate) {
+      const shortWindows = collectPitchWindows(rawPitch, correlation, speech, true);
+      if (shortWindows.length >= 8) stable = shortWindows;
+    }
+    const range = stable.length < 6 ? null : round(percentile(stable, 0.9) - percentile(stable, 0.1), 2);
+    return { range, approximate: approximate && range != null };
+  }
+
+  function measureAccentRange(levels, speech, threshold) {
     const sustainedLevels = [];
-    for (let start = 0; start < f0.length; start += 30) {
-      const voicedLevels = [];
-      for (let i = start; i < Math.min(start + 30, f0.length); i++) {
-        if (speech[i] && levels[i] >= threshold && reliablePitch(f0[i], correlation[i])) voicedLevels.push(levels[i]);
+    for (let start = 0; start < levels.length; start += 30) {
+      const activeLevels = [];
+      for (let i = start; i < Math.min(start + 30, levels.length); i++) {
+        if (speech[i] && levels[i] >= threshold) activeLevels.push(levels[i]);
       }
       // Compare representative levels across 300 ms windows to ignore isolated peaks and pauses.
-      if (voicedLevels.length >= 10) sustainedLevels.push(median(voicedLevels));
+      if (activeLevels.length >= 10) sustainedLevels.push(median(activeLevels));
     }
     return sustainedLevels.length < 6 ? null : round(percentile(sustainedLevels, 0.9) - percentile(sustainedLevels, 0.1), 2);
   }
@@ -286,7 +307,7 @@
     const f0mean = mean(f0vals), f0med = median(f0vals);
     const stSd = stdev(stVals), stLo = percentile(stVals, 0.05), stHi = percentile(stVals, 0.95);
     const voicedShare = nF0 ? f0vals.length / nF0 : 0;
-    const intonationRange = measureIntonation(f0, rraw, speech);
+    const intonation = measureIntonation(f0, f0raw, rraw, speech);
 
     // джиттер и шиммер (локальные)
     let jSum = 0, jN = 0, sSum = 0, sN = 0;
@@ -414,7 +435,7 @@
       p10Db: round(percentile(speechDb, 0.1), 1),
       p90Db: round(percentile(speechDb, 0.9), 1),
       dynRangeDb: round(percentile(speechDb, 0.9) - percentile(speechDb, 0.1), 1),
-      accentRange: measureAccentRange(dbArr, speech, f0, rraw, thrDb),
+      accentRange: measureAccentRange(dbArr, speech, thrDb),
       peakDb: round(db(peak), 1),
       clippingPct: round(clipCount / Math.max(1, x.length) * 100, 3),
       noiseFloorDb: round(noiseFloorDb, 1),
@@ -457,7 +478,7 @@
       f0: {
         meanHz: round(f0mean, 1), medianHz: round(f0med, 1),
         p5Hz: round(percentile(f0vals, 0.05), 1), p95Hz: round(percentile(f0vals, 0.95), 1),
-        sdSemitones: round(stSd, 2), rangeSemitones: round(stHi - stLo, 2), intonationRange,
+        sdSemitones: round(stSd, 2), rangeSemitones: round(stHi - stLo, 2), intonationRange: intonation.range, intonationApproximate: intonation.approximate,
         voicedShare: round(voicedShare, 3), frames: f0vals.length,
         voiceType: f0med && f0med < 120 ? 'низкий' : f0med && f0med < 175 ? 'средний' : 'высокий'
       },
@@ -838,7 +859,7 @@
     if(range != null && range < 2)cNotes.push('Интонация меняется мало: выделите голосом главный результат и запрос.');
     if(range > 8)cNotes.push('Большие перепады тона: проверьте, помогают ли они выделить важные мысли.');
     axes.push({key:'confidence',label:'Выразительность',score:confidence,group:'speech',
-      detail:'Оценка изменений высоты голоса на устойчивых участках речи.',notes:cNotes});
+      detail: f.intonationApproximate ? 'Приблизительная оценка по коротким участкам с различимой высотой голоса.' : 'Оценка изменений высоты голоса на устойчивых участках речи.',notes:cNotes});
 
     // тембр и дикция
     const hnrScore = Math.round(clamp((ti.hnrDb - 6) / 16 * 100, 0, 100));
@@ -1083,9 +1104,10 @@
     // доступность осей
     scores.forEach((a) => { a.available = true; });
     if (!text.hasText) scores.forEach((a) => { if (a.group === 'text') a.available = false; });
-    if (speech && (speech.durationSec < 8 || speech.speechSec < 3 || speech.f0.frames < 30)) scores.forEach(a => { if (a.group === 'speech') a.available = false; });
+    if (speech && (speech.durationSec < 8 || speech.speechSec < 3)) scores.forEach(a => { if (a.group === 'speech') a.available = false; });
+    if(speech && speech.f0.frames < 30)scores.forEach(a=>{if(a.key==='timbre')a.available=false;});
     if(speech && speech.f0.intonationRange == null)scores.forEach(a=>{if(a.key==='confidence'){a.available=false;a.notes=['Недостаточно участков с устойчивой высотой голоса.'];}});
-    if(speech && speech.loudness.accentRange == null)scores.forEach(a=>{if(a.key==='energy'){a.available=false;a.notes=['Недостаточно озвученных участков для сравнения громкости.'];}});
+    if(speech && speech.loudness.accentRange == null)scores.forEach(a=>{if(a.key==='energy'){a.available=false;a.notes=['Недостаточно участков речи для сравнения громкости.'];}});
     if (!speech) scores.forEach((a) => { if (a.group === 'speech') a.available = false; });
 
     const avail = scores.filter((a) => a.available);
@@ -1101,7 +1123,7 @@
     function limit(value, reason) { if (total > value) { total = value; scoreLimits.push(reason); } }
     if (deliveryScore != null) {
       limit(deliveryScore + 15, 'Слабая подача ограничивает общий балл, даже если текст сильный.');
-      const core = avail.filter(a => ['confidence', 'pace'].includes(a.key));
+      const core = avail.filter(a => a.key === 'pace' || (a.key === 'confidence' && !speech.f0.intonationApproximate));
       if (core.some(a => a.score <= 45)) limit(59, 'Есть серьёзные трудности с темпом, паузами или интонацией.');
       else if (core.some(a => a.score < 60)) limit(71, 'Подачу нужно доработать перед выступлением.');
     }
