@@ -71,20 +71,10 @@ Traction: четыре пилота, два перешли в годовые к�
     topic: $('#topic').value.trim(),
     industry: $('#industry').value.trim(),
     format: $('#format').value,
-    audience: $('#audience').value.trim() || 'инвесторы и эксперты',
     targetDurationSec: +$('#regulation').value
   });
 
-  $('#btnToRec').addEventListener('click', () => {
-    if (!$('#topic').value.trim()) {
-      $('#topic').focus();
-      $('#topic').style.borderColor = '#ef4444';
-      flash($('#topic'), 'Укажите тему проекта — по ней строятся вопросы жюри');
-      return;
-    }
-    $('#topic').style.borderColor = '';
-    showStep(2);
-  });
+  $('#btnToRec').addEventListener('click', () => showStep(2));
   $('#btnBack1').addEventListener('click', () => showStep(1));
   $('#btnBack2').addEventListener('click', () => { showStep(2); });
   $('#btnNew').addEventListener('click', () => {
@@ -708,6 +698,12 @@ Traction: четыре пилота, два перешли в годовые к�
 
   async function runAnalysis() {
     if (state.starting || state.analyzing) return;
+    if (!$('#topic').value.trim()) {
+      showStep(2);
+      $('#topic').focus();
+      flash($('#topic'), 'Укажите тему проекта — по ней строятся вопросы жюри');
+      return;
+    }
     state.analyzing = true; $('#btnAnalyze').disabled = true;
     try {
     if (state.recording) await stopRecording();
@@ -793,11 +789,14 @@ Traction: четыре пилота, два перешли в годовые к�
       </div>
       <div class="verdict">
         <b>${esc(m.topic || 'Питч')}</b>
-        <div class="muted small">${esc(m.format)} · ${esc(m.audience)} · регламент ${m.targetDurationSec ? m.targetDurationSec + ' с' : '—'} · факт ${m.durationSec} с</div>
+        <div class="muted small">${esc(m.format)} · регламент ${m.targetDurationSec ? m.targetDurationSec + ' с' : '—'} · факт ${m.durationSec} с</div>
         <ul>${overview.map((v) => `<li>${esc(v)}</li>`).join('')}</ul>
         ${r.warnings.length ? `<div class="warn-list">⚠ ${r.warnings.map(esc).join('<br>⚠ ')}</div>` : ''}
       </div>
     </div>`);
+
+    const timing = r.timing;
+    if (timing) html.push(`<div class="panel-card"><h2>Соблюдение регламента</h2><div class="section-heading"><strong>${esc(timing.label)}</strong><b>${timing.score == null ? 'Без оценки' : timing.score + ' / 100'}</b></div><p class="muted">${esc(timing.detail)}</p>${timing.available ? `<p class="small muted">Факт: ${fmtTime(timing.durationSec)} · Лимит: ${fmtTime(timing.limitSec)}. За превышение снимается до 10 баллов с общей оценки; короткое выступление не штрафуется.</p>` : ''}</div>`);
 
     html.push(`<div class="panel-card"><h2>Профиль питча</h2><div class="profile-grid"><canvas id="radar" class="chart" role="img" aria-label="Диаграмма оценок питча. Числовые значения доступны в блоке Оценки по осям." height="360"></canvas><div class="profile-explanation"><h3>Как читать диаграмму</h3><p class="muted">Чем дальше точка от центра, тем выше оценка. Сравнивайте направления между собой: самые короткие лучи показывают, над чем работать сначала.</p><h3>На что обратить внимание</h3><ol>${r.scores.filter(x=>x.available!==false).slice().sort((a,b)=>a.score-b.score).slice(0,3).map(x=>`<li><b>${esc(x.key==='qready'?'Полнота аргументов':x.label)} — ${x.score}/100.</b><p class="muted small">${esc(axisExplanation(x,r))}</p></li>`).join('')}</ol><p class="muted small">«Полнота аргументов» учитывает ключевые темы и наличие чисел. Это не проверка истинности фактов. Недоступные направления в диаграмме не показаны.</p></div></div></div>`);
     html.push(`<div class="panel-card"><h2>Оценки по осям</h2><div class="axes">${r.scores.map(a=>axisHtml(a,r)).join('')}</div></div>`);
@@ -814,7 +813,7 @@ Traction: четыре пилота, два перешли в годовые к�
     /* — речь — */
     if(s){
       const speechAdvice=feedback.improvements.filter(x=>/остановку на|акценты голосом|Замедлитесь|Сократите затянутое|Уложитесь/.test(x.title));
-      html.push(`<div class="panel-card"><h2>Речь и голос</h2><div class="speech-scores">${['confidence','pace','energy'].map(key=>{const a=r.scores.find(x=>x.key===key);return `<div><span class="muted small">${esc({confidence:'Выразительность',pace:'Темп и паузы',energy:'Акценты громкостью'}[key])}</span><b style="color:${a?.available!==false?scoreColor(a?.score||0):'var(--muted)'}">${a?.available!==false?a.score+'/100':'нет данных'}</b></div>`;}).join('')}</div><div class="split"><div><h3>Параметры речи</h3><table class="metrics">
+      html.push(`<div class="panel-card"><h2>Речь и голос</h2><div class="speech-scores">${['confidence','pace','energy'].map(key=>{const a=r.scores.find(x=>x.key===key);return `<div><span class="muted small">${esc({confidence:'Выразительность',pace:'Темп речи',energy:'Акценты громкостью'}[key])}</span><b style="color:${a?.available!==false?scoreColor(a?.score||0):'var(--muted)'}">${a?.available!==false?a.score+'/100':'нет данных'}</b></div>`;}).join('')}</div><div class="split"><div><h3>Параметры речи</h3><table class="metrics">
         <tr><td>Длительность</td><td>${s.durationSec} с${m.targetDurationSec?' при регламенте '+m.targetDurationSec+' с':''}</td></tr>
         <tr><td>Темп речи</td><td>${esc(E.describeTempo(s,t))}</td></tr>
         <tr><td>Речь и остановки</td><td>${s.speechSec} с речи, ${s.pauseSec} с остановок внутри выступления</td></tr>
@@ -830,23 +829,22 @@ Traction: четыре пилота, два перешли в годовые к�
       <h3>Транскрипт с подсветкой</h3><div class="legend"><span><i style="background:#22c55e"></i>позитив</span><span><i style="background:#ef4444"></i>негатив</span><span><i style="background:#f59e0b"></i>слова-паразиты</span><span><i style="background:#8b5cf6"></i>сомнения</span><span><i style="background:#94a3b8"></i>шаблоны</span><span><i style="background:#38bdf8"></i>уверенные утверждения</span></div><div class="transcript-view">${highlightHtml(r.transcript.text,r.highlights.spans)}</div>
       <h3>Что влияет на понятность</h3><p class="muted small">Здесь показано, что в вашем тексте может затруднять понимание и на что обратить внимание.</p><div class="language-metrics clarity-metrics">
         <div><span class="clarity-title">Лишние вводные слова</span><b class="${t.fillers.total?'clarity-attention':'clarity-good'}">${t.fillers.total}<small>найдено в тексте</small></b><p>${t.fillers.list.length?'Например: <strong>'+esc(t.fillers.list.slice(0,3).map(x=>'«'+x.word+'»').join(', '))+'</strong>. Если выражение не добавляет смысла, замените его короткой паузой.':'Слова-паразиты по словарю <strong>не найдены</strong>. Переслушайте запись: распознавание может пропустить часть слов.'}</p></div>
-        ${t.sentenceMetricsAvailable ? `<div><span class="clarity-title">Длина предложений</span><b class="${t.avgSentenceLen>20?'clarity-attention':'clarity-good'}">${t.avgSentenceLen}<small>слов в среднем</small></b><p>${t.longSentences.length?'<strong>Длинных предложений: '+t.longSentences.length+'.</strong> Попробуйте разделить их: одна главная мысль — одна фраза.':'Предложений длиннее 24 слов <strong>не найдено</strong>. Проверьте, что каждая фраза передаёт одну основную мысль.'}</p></div>` : `<div><span class="clarity-title">Длина предложений</span><p>В расшифровке недостаточно знаков конца предложения. Длина и читаемость исключены из оценки.${t.recognitionPhrases ? ' Фрагментов расшифровки: '+t.recognitionPhrases+'.' : ''} Для оценки длины можно вставить текст со знаками в режиме «Только текст».</p></div>`}
+        <div><span class="clarity-title">Фразы сомнения</span><b class="${t.hedges.total?'clarity-attention':'clarity-good'}">${t.hedges.total}<small>совпадений по словарю</small></b><p>${t.hedges.list.length?'Например: <strong>'+esc(t.hedges.list.slice(0,3).map(x=>'«'+x.word+'»').join(', '))+'</strong>. Уточните, где есть подтверждённый факт, а где гипотеза.':'Фразы сомнения по словарю <strong>не найдены</strong>.'} Гипотезы не нужно выдавать за доказанные результаты.</p></div>
         <div><span class="clarity-title">Фразы, которым не хватает деталей</span><b class="${t.cliches.total?'clarity-attention':'clarity-good'}">${t.cliches.total}<small>найдено в тексте</small></b><p>${t.cliches.list.length?'Например: <strong>'+esc(t.cliches.list.slice(0,2).map(x=>'«'+x.word+'»').join(', '))+'</strong>. Объясните, что именно делает продукт и какую пользу получает клиент.':'Шаблонные выражения по словарю <strong>не найдены</strong>. Убедитесь, что главные обещания подкреплены примерами.'}</p></div>
-        ${t.sentenceMetricsAvailable ? `<div><span class="clarity-title">Легко ли следить за мыслью</span><b class="${t.flesch<45?'clarity-attention':'clarity-good'}">${t.flesch>=60?'Легче':t.flesch>=45?'Средне':'Сложнее'}</b><p>${t.flesch>=60?'По длине слов и фраз текст выглядит <strong>несложным</strong>. Проверьте, понятны ли термины человеку вне вашей отрасли.':t.flesch>=45?'Сложность выглядит <strong>умеренной</strong>. Замените редкие термины простым объяснением, где это возможно.':'Слова и фразы выглядят <strong>сложными для восприятия</strong>. Сократите длинные объяснения и поясните термины.'} Это приблизительная оценка, без проверки смысла.</p></div>` : ''}
+        <div><span class="clarity-title">Близкие повторы</span><b class="${t.closeRepeats.total?'clarity-attention':'clarity-good'}">${t.closeRepeats.total}<small>повторных употреблений рядом</small></b><p>${t.closeRepeats.list.length?'Например: <strong>'+esc('«'+t.closeRepeats.list[0].examples[0].text+'»')+'</strong>. Проверьте, можно ли убрать повтор без потери смысла.':'Близких повторов <strong>не найдено</strong>.'} Ищем одинаковые слова в окне из 10 слов, без служебных слов. Повтор термина может быть уместен.</p></div>
       </div><h3>Что влияет на убедительность и структуру</h3><div class="language-metrics">
-        <div><b>${t.hedges.total}</b><span>неопределённых формулировок</span><p>Отделите гипотезы от фактов. Укажите, что ещё предстоит проверить.</p></div>
         <div><b>${t.facts.numbers}</b><span>числовых примеров</span><p><strong>Конкретика и полнота аргументов.</strong> ${t.facts.examples.length?esc(t.facts.examples.slice(0,3).join('; ')):'Добавьте измеримый результат.'} Программа не проверяет достоверность чисел.</p></div>
         <div><b>${t.positive.total}</b><span>слов о пользе и результате</span><p><strong>Позитивный язык.</strong> Подкрепляйте такие формулировки результатами и примерами.</p></div>
         ${t.sentenceMetricsAvailable ? `<div><b>${t.facts.sentencesWithNumbers} / ${t.sentences}</b><span>предложений с числами</span><p>Показывает, как числовые детали распределены по тексту.</p></div>` : ''}
         <div><b>${t.structure.filter(x=>x.required&&x.found).length} / ${t.structure.filter(x=>x.required).length}</b><span>необходимых тем обозначено</span><p><strong>Структура.</strong> Включены основные и отраслевые критерии. Ниже показано, какие темы требуют дополнения.</p></div>
       </div>
-      <details class="language-details"><summary>Посмотреть найденные выражения</summary>${wordGroup('Позитивные слова',t.positive.list,'pos')}${wordGroup('Негативные слова',t.negative.list,'neg')}${wordGroup('Слова-сомнения',t.hedges.list,'hedge')}${wordGroup('Шаблонные выражения',t.cliches.list,'cliche')}${wordGroup('Уверенные формулировки',t.boosters.list,'booster')}</details>
+      <details class="language-details"><summary>Посмотреть найденные выражения</summary>${wordGroup('Позитивные слова',t.positive.list,'pos')}${wordGroup('Негативные слова',t.negative.list,'neg')}${wordGroup('Слова-сомнения',t.hedges.list,'hedge')}${closeRepeatsHtml(t.closeRepeats)}${wordGroup('Шаблонные выражения',t.cliches.list,'cliche')}${wordGroup('Уверенные формулировки',t.boosters.list,'booster')}</details>
     </div>`);
 
     /* — структура — */
     if(t.hasText){
       const core=r.structure.filter(x=>!x.sector),sector=r.structure.filter(x=>x.sector);
-      html.push(`<div class="panel-card"><h2>Структура питча</h2><p class="muted small">Профиль: <b>${esc(t.industryProfile.label)}</b>. Оценка учитывает основные темы${sector.length?' и '+sector.length+' отраслевых критерия':''}. Найденные признаки не подтверждают истинность утверждений.</p><h3>Основные блоки</h3><div class="struct-grid">${core.map(b=>`<div class="struct ${b.found?'ok':'no'}"><h4><span>${b.found?'✓':'○'} ${esc(b.label)}</span></h4><p>${b.found?'Найдены слова-маркеры темы. Проверьте полноту объяснения.':esc(b.suggestion)}</p>${b.found&&b.evidence.length?`<div class="ev">${b.evidence.map(esc).join(', ')}</div>`:''}</div>`).join('')}</div>${sector.length?`<h3>Отраслевые метрики: ${esc(t.industryProfile.label)}</h3><div class="struct-grid">${sector.map(b=>`<div class="struct ${b.found?'ok':'no'}"><h4>${b.found?'✓':'○'} ${esc(b.label)}</h4><p>${esc(b.suggestion)}</p><div class="ev">${b.found?'Есть в тексте: '+b.evidence.map(esc).join(' '):b.quantified?'Нужны название метрики и число в одном предложении.':'Нужно явно описать этот аспект.'}</div></div>`).join('')}</div>`:'<p class="muted small">Для профильных метрик выберите конкретную отрасль на первом шаге.</p>'}</div>`);
+      html.push(`<div class="panel-card"><h2>Структура питча</h2><p class="muted small">Профиль: <b>${esc(t.industryProfile.label)}</b>. Оценка учитывает основные темы${sector.length?' и '+sector.length+' отраслевых критерия':''}. Найденные признаки не подтверждают истинность утверждений.</p><h3>Основные блоки</h3><div class="struct-grid">${core.map(b=>`<div class="struct ${b.found?'ok':'no'}"><h4><span>${b.found?'✓':'○'} ${esc(b.label)}</span></h4><p>${b.found?'Найдены слова-маркеры темы. Проверьте полноту объяснения.':esc(b.suggestion)}</p>${b.found&&b.evidence.length?`<div class="ev">${b.evidence.map(esc).join(', ')}</div>`:''}</div>`).join('')}</div>${sector.length?`<h3>Отраслевые метрики: ${esc(t.industryProfile.label)}</h3><div class="struct-grid">${sector.map(b=>`<div class="struct ${b.found?'ok':'no'}"><h4>${b.found?'✓':'○'} ${esc(b.label)}</h4><p>${esc(b.suggestion)}</p><div class="ev">${b.found?'Есть в тексте: '+b.evidence.map(esc).join(' '):b.quantified?'Нужны название метрики и число в одном предложении.':'Нужно явно описать этот аспект.'}</div></div>`).join('')}</div>`:'<p class="muted small">Для профильных метрик выберите конкретную отрасль на экране «Проект и запись».</p>'}</div>`);
     }
 
     /* — обратная связь — */
@@ -878,22 +876,25 @@ Traction: четыре пилота, два перешли в годовые к�
     }
     const missing=t.missing.filter(x=>x.required).map(x=>x.label);
     const explanations={
+      cleanliness:'Слова-паразиты: '+t.fillers.total+'; близкие повторы: '+t.closeRepeats.total+'. Балл учитывает частоту на 100 слов. Примеры — в разделе «Текст и язык». Повтор термина может быть уместен.',
       structure:missing.length?'Не найдены маркеры тем: '+missing.join(', ')+'.':'Маркеры обязательных тем есть. Проверьте, что за каждым тезисом стоит объяснение.',
       persuasion:t.facts.numbers?'Числовых выражений: '+t.facts.numbers+'. В расшифровке: '+t.facts.examples.slice(0,3).join(', ')+'.':'Числа в расшифровке не найдены. Проверьте текст записи или добавьте измеримый результат.',
       clarity:t.sentenceMetricsAvailable?'Средняя длина предложения — '+t.avgSentenceLen+' слов. Вводных заполнителей — '+t.fillers.total+'. Примеры ниже в тексте.':'Частичная оценка по словам-заполнителям и шаблонным выражениям. В расшифровке недостаточно границ предложений.',
       positivity:'Слова результата: '+t.positive.total+'; слова о проблемах: '+t.negative.total+'. Негатив в описании проблемы клиента может быть уместен.',
       qready:'Учитываются основные темы, числовые примеры и профильные критерии отрасли «'+t.industryProfile.label+'». Полнота смысла автоматически не проверяется.',
       confidence:s?.f0.intonationApproximate?a.detail:s&&s.f0.intonationRange<2?'Интонация меняется мало. Выделите голосом ключевой результат и запрос к аудитории.':'Оценка учитывает изменение высоты голоса на устойчивых участках речи.',
-      timbre:'Оценка звукового сигнала зависит от микрофона, уровня записи и шума. Чёткость произношения отдельно не оценивается.',
       energy:s&&s.loudness.accentRange<3?'Громкость меняется мало. Попробуйте выделить главный тезис.':'Оценка учитывает устойчивые изменения громкости между участками речи.',
       pace:t.tempo.wordsPerMin?'По полной записи и расшифровке — '+t.tempo.wordsPerMin+' слов в минуту. Паузы учитываются.':'Без полной расшифровки темп приблизительный. Добавьте текст для точного подсчёта слов.'
     };
     return explanations[a.key]||'Оценка по доступным признакам выступления.';
   }
   function axisHtml(a,r) {
-    const labels={confidence:'Выразительность',timbre:'Качество записи',energy:'Акценты громкостью',pace:'Темп и ритм',structure:'Структура питча',persuasion:'Конкретика',clarity:'Понятность',positivity:'Позитивный язык',qready:'Полнота аргументов'};
+    const labels={cleanliness:'Чистота речи',confidence:'Выразительность',energy:'Акценты громкостью',pace:'Темп речи',structure:'Структура питча',persuasion:'Конкретика',clarity:'Понятность',positivity:'Позитивный язык',qready:'Полнота аргументов'};
     const available=a.available!==false;
     return `<div class="axis"><div class="axis-top"><b>${esc(labels[a.key]||a.label)}</b><span style="color:${available?scoreColor(a.score):'var(--muted)'}">${available?a.score+'/100':'нет данных'}</span></div><div class="track"><i style="width:${available?a.score:0}%;background:${scoreColor(a.score)}"></i></div><div class="axis-detail">${esc(axisExplanation(a,r))}</div></div>`;
+  }
+  function closeRepeatsHtml(repeats) {
+    return '<h3>Близкие повторы: окно из 10 слов</h3>'+(repeats.list.length?'<ul class="precise-list">'+repeats.list.map(item=>`<li><b>${esc(item.word)} — ${item.count} повторных употреблений рядом</b>${item.examples.map(example=>`<p>«${esc(example.text)}»</p>`).join('')}</li>`).join('')+'</ul>':'<p class="muted small">Близких повторов не найдено.</p>');
   }
   function wordGroup(title,list,cls){
     return `<h3>${esc(title)}</h3>${list.length?'<div class="chip-list">'+list.slice(0,8).map(x=>`<span class="chip ${cls}">${esc(x.word)} <small>×${x.count}</small></span>`).join('')+'</div>':'<p class="muted small">По словарю не найдены.</p>'}`;
@@ -928,7 +929,7 @@ Traction: четыре пилота, два перешли в годовые к�
 
   const SHORT = {
     structure: 'Структура', persuasion: 'Конкретика', clarity: 'Ясность', positivity: 'Позитив',
-    qready: 'Аргументы', confidence: 'Подача', timbre: 'Запись', energy: 'Акценты', pace: 'Ритм'
+    qready: 'Аргументы', cleanliness: 'Чистота', confidence: 'Подача', energy: 'Акценты', pace: 'Ритм'
   };
 
   function drawRadar(canvas, axes) {

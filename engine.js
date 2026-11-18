@@ -516,6 +516,23 @@
     while ((m = re.exec(text))) out.push({ w: m[0], norm: m[0].toLowerCase().replace(/ё/g, 'е'), start: m.index, end: m.index + m[0].length });
     return out;
   }
+  function findCloseRepeats(text) {
+    const tokens=tokenize(text), last=new Map(), groups=new Map();
+    const stop=new Set(('это эта этот эти того тому тем той тех так как что чтобы если когда где для при про без под над между через после перед или либо но а и да не ни же бы ли ведь вот уже еще только тоже также даже очень более менее самый всего свой свои наша наше наши наш ваша ваше ваши ваш его ее их она они оно мы вы мне мне нас нам вас вам тебе тебя себя себе кто который которая которые которое будет будут было были быть есть может можно нужно надо the and for with this that from have has are was were not you your our they').split(' '));
+    for(let i=0;i<tokens.length;i++){
+      const token=tokens[i],key=token.norm;
+      if(key.length<3 || !/^[a-zа-я]+$/i.test(key) || stop.has(key))continue;
+      const previous=last.get(key);
+      if(previous!==undefined && i-previous<10){
+        if(!groups.has(key))groups.set(key,{word:token.w,count:0,examples:[]});
+        const group=groups.get(key);group.count++;
+        if(group.examples.length<3)group.examples.push({text:text.slice(tokens[previous].start,token.end),start:tokens[previous].start,end:token.end,wordDistance:i-previous});
+      }
+      last.set(key,i);
+    }
+    const list=[...groups.values()].sort((a,b)=>b.count-a.count||a.examples[0].start-b.examples[0].start);
+    return {total:list.reduce((sum,item)=>sum+item.count,0),unique:list.length,list,windowWords:10};
+  }
   function splitSentences(text) {
     const parts = [];
     const re = /(?:\d+(?:\.\d+)+|[^.!?…\n])+[.!?…]*/g;
@@ -747,6 +764,7 @@
       positive: { total: pos.total, unique: pos.unique, list: pos.list.slice(0, 40), marks: pos.marks, density: words ? round(pos.total / words * 100, 2) : 0, weighted: posWeighted },
       negative: { total: neg.total, unique: neg.unique, list: neg.list.slice(0, 40), marks: neg.marks, density: words ? round(neg.total / words * 100, 2) : 0, earlyShare: neg.total ? round(negEarly / neg.total, 2) : 0 },
       fillers: { total: fil.total, unique: fil.unique, list: fil.list, marks: fil.marks, per100: words ? round(fil.total / words * 100, 2) : 0, perMin: ctx.speech && ctx.speech.speechSec > 3 ? round(fil.total / (ctx.speech.speechSec / 60), 1) : null, weighted: filWeighted },
+      closeRepeats: findCloseRepeats(clean),
       hedges: { total: hed.total, unique: hed.unique, list: hed.list, marks: hed.marks, per100: words ? round(hed.total / words * 100, 2) : 0, weighted: hedWeighted },
       boosters: { total: boo.total, unique: boo.unique, list: boo.list, marks: boo.marks, per100: words ? round(boo.total / words * 100, 2) : 0 },
       cliches: { total: cli.total, unique: cli.unique, list: cli.list, marks: cli.marks, per100: words ? round(cli.total / words * 100, 2) : 0 },
@@ -839,6 +857,11 @@
       detail: `Ключевых блоков для вопросов раскрыто: ${critFound} из ${critical.length}. Цифр в тексте: ${t.facts.numbers}.`,
       notes: critFound < critical.length ? ['Пробелы в блоках ' + t.structure.filter((s) => critical.indexOf(s.key) >= 0 && !s.found).map((s) => '«' + s.label + '»').join(', ') + ' почти гарантируют вопросы жюри'] : []
     });
+    const repeatRate = t.words ? t.closeRepeats.total / t.words * 100 : 0;
+    axes.push({key:'cleanliness',label:'Чистота речи',group:'text',
+      score:Math.round(clamp(100 - 8 * t.fillers.per100 - 5 * repeatRate, 0, 100)),
+      detail:`Слова-паразиты: ${t.fillers.total}; близкие повторы: ${t.closeRepeats.total}. Учитывается частота на 100 слов. Повторы ищутся в окне из 10 слов, без служебных слов.`,
+      notes:t.fillers.total || t.closeRepeats.total ? ['Проверьте найденные выражения в разделе «Текст и язык». Повтор термина может быть уместен.'] : ['Словарные слова-паразиты и близкие повторы не найдены.']});
     return axes;
   }
 
@@ -861,26 +884,6 @@
     axes.push({key:'confidence',label:'Выразительность',score:confidence,group:'speech',
       detail: f.intonationApproximate ? 'Приблизительная оценка по коротким участкам с различимой высотой голоса.' : 'Оценка изменений высоты голоса на устойчивых участках речи.',notes:cNotes});
 
-    // тембр и дикция
-    const hnrScore = Math.round(clamp((ti.hnrDb - 6) / 16 * 100, 0, 100));
-    const jitScore = Math.round(clamp(100 - (ti.jitterPct - 0.4) * 45, 0, 100));
-    const shimScore = Math.round(clamp(100 - (ti.shimmerPct - 2) * 12, 0, 100));
-    const brightScore = bandScore(ti.centroidHz, 900, 2600, 800);
-    const snrScore = Math.round(clamp((lo.snrDb - 8) / 22 * 100, 0, 100));
-    const timbre = Math.round(0.3 * hnrScore + 0.2 * jitScore + 0.15 * shimScore + 0.2 * brightScore + 0.15 * snrScore);
-    const tNotes = [];
-    if (ti.hnrDb < 12) tNotes.push(`Низкая гармоничность записи (HNR ${ti.hnrDb} дБ). Причиной могут быть шум, микрофон или особенности голоса.`);
-    if (ti.jitterPct > 1.5) tNotes.push(`Приблизительная нестабильность высоты (джиттер ${ti.jitterPct}%; не медицинское измерение)`);
-    if (ti.shimmerPct > 5) tNotes.push(`Неровная громкость внутри фраз (шиммер ${ti.shimmerPct}%)`);
-    if (ti.centroidHz < 800) tNotes.push(`Низкий спектральный центроид (${ti.centroidHz} Гц): зависит от голоса и микрофона`);
-    if (ti.centroidHz > 2800) tNotes.push(`Очень яркий/резкий тембр (центроид ${ti.centroidHz} Гц)`);
-    if (lo.snrDb < 15) tNotes.push(`Низкий запас над шумом (${lo.snrDb} дБ): запись шумная`);
-    axes.push({
-      key: 'timbre', label: 'Тембр и качество записи', score: timbre, group: 'speech',
-      detail: `Тип голоса: ${f.voiceType} (медиана ${f.medianHz} Гц). Яркость: центроид ${ti.centroidHz} Гц, наклон спектра ${ti.slopeDbOct} дБ/окт, доля ВЧ ${pct(ti.hfRatio)}%. HNR ${ti.hnrDb} дБ, джиттер ${ti.jitterPct}%, шиммер ${ti.shimmerPct}%, SNR ${lo.snrDb} дБ.`,
-      notes: tNotes
-    });
-
     const accents = lo.accentRange;
     const energy = accents == null ? 0 : Math.round(15 + 85 * (1 - Math.exp(-Math.max(0, accents - 0.8) / 6)));
     const eNotes = [];
@@ -891,19 +894,13 @@
       notes: eNotes
     });
 
-    // темп и паузы
-    const paceIdeal = bandScore(pace, 125, 165, 42);
-    const pauseRatioScore = bandScore(s.pauseRatio, 0.08, 0.24, 0.12);
-    const pauseCountScore = bandScore(p.perMin, 5, 16, 6);
-    const rhythm = 0.4 * paceIdeal + 0.25 * pauseRatioScore + 0.15 * pauseCountScore;
-    const pacePauses = Math.round(t?.sentenceMetricsAvailable ? rhythm + 0.2 * bandScore(t.avgSentenceLen, 8, 19, 7) : rhythm / 0.8);
+    // Only tempo affects this score; pauses remain descriptive measurements.
+    const pacePauses = Math.round(bandScore(pace, 125, 165, 42));
     const ppNotes = [];
     if (pace > 175) ppNotes.push(`Быстрый темп (${pace} слов/мин): аудитория не успевает осмыслить цифры`);
     if (pace < 110) ppNotes.push(`Медленный темп (${pace} слов/мин): питч рискует не уложиться в регламент`);
-    if (s.pauseRatio > 0.3) ppNotes.push(`Слишком много пауз: ${pct(s.pauseRatio)}% времени`);
-    if (s.pauseRatio < 0.06) ppNotes.push('Почти нет пауз: речь сливается в поток, ключевые мысли не выделяются');
     axes.push({
-      key: 'pace', label: 'Темп и паузы', score: pacePauses, group: 'speech',
+      key: 'pace', label: 'Темп речи', score: pacePauses, group: 'speech',
       detail: `${describeTempo(s, t)} Слоговых импульсов ${r.syllablesPerMin}/мин. Речь ${s.speechSec} с, паузы ${s.pauseSec} с. Пауз: ${p.count} (коротких ${p.short}, заметных ${p.notable}, длинных ${p.long}), длиннейшая ${p.longest} с.`,
       notes: ppNotes
     });
@@ -1020,7 +1017,7 @@
   /* ==================== СБОРКА ОТЧЁТА ==================== */
   const WEIGHTS = {
     structure: 0.16, persuasion: 0.14, clarity: 0.08, positivity: 0.06, qready: 0.06,
-    confidence: 0.16, timbre: 0.12, energy: 0.1, pace: 0.12
+    confidence: 0.16, cleanliness: 0.12, energy: 0.1, pace: 0.12
   };
 
   function gradeOf(score) {
@@ -1077,6 +1074,18 @@
    * Главная точка входа.
    * @param {object} input { samples, sampleRate, text, meta, durationSec, onProgress }
    */
+  function evaluateTiming(durationSec, limitSec) {
+    const duration = Number(durationSec), limit = Number(limitSec);
+    const base = { durationSec: duration, limitSec: limit, available: false, score: null, inTarget: null, overrunSec: 0, penalty: 0 };
+    if (!Number.isFinite(limit) || limit <= 0) return { ...base, label: 'Без регламента', detail: 'Лимит не задан — время не влияет на оценку.' };
+    if (!Number.isFinite(duration) || duration <= 0) return { ...base, label: 'Время не измерено', detail: 'Добавьте запись: по одному тексту нельзя определить длительность выступления.' };
+    const overrun = Math.max(0, duration - limit);
+    const score = Math.max(0, Math.round(100 - 200 * overrun / limit));
+    return { ...base, available: true, score, inTarget: overrun === 0, overrunSec: round(overrun, 1), penalty: round((100 - score) / 10, 1),
+      label: overrun ? 'Регламент превышен' : 'Вы уложились в регламент',
+      detail: overrun ? 'Сократите выступление минимум на ' + Math.ceil(overrun) + ' с. Оценка снижается пропорционально превышению; при превышении на 50% — 0/100.' : 'Лимит соблюдён. Время не снижает общий балл.' };
+  }
+
   function analyze(input) {
     input = input || {};
     const meta = Object.assign({
@@ -1097,15 +1106,20 @@
     }
     progress(0.7, 'Анализ текста');
     const text = analyzeText(input.text || '', { topic: meta.topic, industry: meta.industry, inputSource: meta.inputSource, cues: input.cues, durationSec: input.durationSec, speech });
-    const durationSec = (speech && speech.durationSec) || audioDuration || input.durationSec || 0;
+    const durationSec = input.samples?.length && input.sampleRate ? input.samples.length / input.sampleRate : (Number(input.durationSec) || 0);
+    const timing = evaluateTiming(durationSec, meta.targetDurationSec);
 
     progress(0.82, 'Оценки и рекомендации');
     let scores = scoreText(text).concat(scoreSpeech(speech, text));
+    // Keep the replacement in the former recording-quality position.
+    const cleanIndex=scores.findIndex(a=>a.key==='cleanliness');
+    const cleanAxis=scores.splice(cleanIndex,1)[0];
+    const voiceIndex=scores.findIndex(a=>a.key==='confidence');
+    scores.splice(voiceIndex<0?scores.length:voiceIndex+1,0,cleanAxis);
     // доступность осей
     scores.forEach((a) => { a.available = true; });
     if (!text.hasText) scores.forEach((a) => { if (a.group === 'text') a.available = false; });
     if (speech && (speech.durationSec < 8 || speech.speechSec < 3)) scores.forEach(a => { if (a.group === 'speech') a.available = false; });
-    if(speech && speech.f0.frames < 30)scores.forEach(a=>{if(a.key==='timbre')a.available=false;});
     if(speech && speech.f0.intonationRange == null)scores.forEach(a=>{if(a.key==='confidence'){a.available=false;a.notes=['Недостаточно участков с устойчивой высотой голоса.'];}});
     if(speech && speech.loudness.accentRange == null)scores.forEach(a=>{if(a.key==='energy'){a.available=false;a.notes=['Недостаточно участков речи для сравнения громкости.'];}});
     if (!speech) scores.forEach((a) => { if (a.group === 'speech') a.available = false; });
@@ -1128,6 +1142,7 @@
       else if (core.some(a => a.score < 60)) limit(71, 'Подачу нужно доработать перед выступлением.');
     }
     if (text.hasText && text.words < 40) limit(49, 'Слишком короткий текст для полноценной оценки питча.');
+    if (timing.penalty) { total = Math.max(0, Math.round(total - timing.penalty)); scoreLimits.push('Превышение регламента: снято ' + timing.penalty + ' балла из 100.'); }
     const grade = gradeOf(total);
     if (!speech && text.hasText) grade.label += ' (только текст; подача не оценена)';
 
@@ -1135,7 +1150,7 @@
       meta: Object.assign({}, meta, {
         durationSec: round(durationSec, 1),
         targetDurationSec: meta.targetDurationSec,
-        inTarget: meta.targetDurationSec ? durationSec <= meta.targetDurationSec * 1.05 : null,
+        inTarget: timing.inTarget,
         hasAudio: !!speech, hasText: text.hasText,
         engine: 'PitchEngine ' + (LEX().VERSION || '1.0.0')
       }),
@@ -1144,7 +1159,7 @@
         words: text.words, sentences: text.sentenceMetricsAvailable ? text.sentences : null,
         cues: input.cues || null
       },
-      text, speech, scores,
+      text, speech, scores, timing,
       total: Object.assign({ score: total }, grade, { axes: avail.length, textScore, deliveryScore, rawScore: rawTotal, scoreLimits }),
       warnings: []
     };
@@ -1153,7 +1168,7 @@
     if (speech && deliveryScore == null) report.warnings.push('Недостаточно речевых данных: нужно хотя бы 8 секунд записи с различимым голосом. Оценки подачи недоступны.');
     if (speech && !text.tempo.wordsPerMin) report.warnings.push('Нет полной расшифровки: темп по звуку приблизительный, оценки подачи предварительные.');
     if (!speech && text.hasText) report.warnings.push('Оценён только текст. Без записи нельзя оценить темп, паузы и интонацию.');
-    if (meta.targetDurationSec && durationSec > meta.targetDurationSec * 1.05) report.warnings.push(`Выступление ${round(durationSec, 1)} с — дольше регламента ${meta.targetDurationSec} с.`);
+    if (meta.targetDurationSec && durationSec > meta.targetDurationSec) report.warnings.push(`Выступление ${round(durationSec, 1)} с — дольше регламента ${meta.targetDurationSec} с.`);
     if (meta.targetDurationSec && durationSec && durationSec < meta.targetDurationSec * 0.6) report.warnings.push(`Выступление ${round(durationSec, 1)} с — заметно короче регламента ${meta.targetDurationSec} с.`);
     if (noSignal) report.warnings.push('В аудиозаписи не обнаружен речевой сигнал (слишком тихо или микрофон выключен) — анализ речи пропущен.');
     if (speech && speech.trimmed) report.warnings.push('Проанализированы только первые 10 минут записи.');
@@ -1173,6 +1188,7 @@
 
   function buildVerdict(report) {
     const t = report.text, s = report.speech, out = [];
+    if (report.timing) out.push('Регламент: ' + report.timing.label + (report.timing.score == null ? '' : ' — ' + report.timing.score + '/100') + '. ' + report.timing.detail);
     out.push(`Итог: ${report.total.score}/100 (${report.total.grade}) — ${report.total.label}.`);
     if (t && t.hasText) {
       out.push(`Раскрыто блоков питча: ${t.structure.filter((x) => x.found).length} из ${t.structure.length}; цифр/метрик: ${t.facts.numbers}; слов-паразитов: ${t.fillers.total}; хеджей: ${t.hedges.total}.`);
@@ -1193,11 +1209,12 @@
     const L=[`# Анализ питча: ${r.meta.topic || 'без темы'}`, '', `Общая оценка: ${r.total.score}/100. ${r.total.label}.`, `Содержание: ${r.total.textScore ?? 'нет данных'}. Подача: ${r.total.deliveryScore ?? 'нет данных'}.`, '', 'Оценка помогает тренироваться и не подтверждает достоверность фактов.', '', '## Карта питча'];
     for(const item of buildContentMap(r))L.push(`- ${item.start==null ? 'Фрагмент '+(item.order+1) : (item.estimated?'Примерно ':'')+item.start+' с'} — ${item.label}: ${item.excerpt}`);
     L.push('', '## Подача и понятность');
-    for(const key of ['confidence','pace','energy','clarity','persuasion','qready']){
+    for(const key of ['confidence','cleanliness','pace','energy','clarity','persuasion','qready']){
       const axis=r.scores.find(x=>x.key===key);if(!axis)continue;
-      const names={confidence:'Выразительность',pace:'Темп и ритм',energy:'Акценты громкостью',clarity:'Понятность',persuasion:'Конкретика',qready:'Полнота аргументов'};
+      const names={cleanliness:'Чистота речи',confidence:'Выразительность',pace:'Темп и ритм',energy:'Акценты громкостью',clarity:'Понятность',persuasion:'Конкретика',qready:'Полнота аргументов'};
       L.push(`- ${names[key]}: ${axis.available===false?'недостаточно данных':axis.score+'/100'}.`);
     }
+    if (r.timing) L.push('', '## Соблюдение регламента', r.timing.label + (r.timing.score == null ? '' : ': ' + r.timing.score + '/100'), r.timing.detail);
     L.push('', '## Структура питча', '', '### Уже есть');
     r.structure.filter(x=>x.found).forEach(x=>L.push('- '+x.label));
     L.push('', '### Стоит добавить');
@@ -1338,7 +1355,7 @@
       else if(pace&&pace<110)add(87,'Сократите затянутое объяснение','По тексту и полной длительности получается '+pace+' слов в минуту.','Уберите повтор одного тезиса и длинное вступление. Сравните две записи одного и того же фрагмента.');
       else if(pace)strengths.push({title:'Темп в рабочем диапазоне',evidence:'По расшифровке и полной длительности — '+pace+' слов в минуту.',action:'Сохраните этот ритм; на важных цифрах дайте слушателю время осмыслить результат.'});
     }
-    if(report.meta.targetDurationSec&&report.meta.durationSec>report.meta.targetDurationSec*1.05)add(105,'Уложитесь в регламент','Запись длится '+Math.round(report.meta.durationSec)+' с при лимите '+report.meta.targetDurationSec+' с.','Сократите примерно '+Math.ceil(report.meta.durationSec-report.meta.targetDurationSec)+' с: сначала уберите повторные объяснения и второстепенные примеры.');
+    if(report.meta.targetDurationSec&&report.meta.durationSec>report.meta.targetDurationSec)add(105,'Уложитесь в регламент','Запись длится '+Math.round(report.meta.durationSec)+' с при лимите '+report.meta.targetDurationSec+' с.','Сократите примерно '+Math.ceil(report.meta.durationSec-report.meta.targetDurationSec)+' с: сначала уберите повторные объяснения и второстепенные примеры.');
     issues.sort((a,b)=>b.priority-a.priority);
     const improvements=issues.slice(0,8);
     const practice=improvements.map(x=>({title:x.title,action:x.action}));
@@ -1353,7 +1370,7 @@
 
 
   return {
-    analyze, analyzeAudio, analyzeText, describeTempo, buildContentMap, evaluateAnswer, buildCoachingFeedback, getIndustryProfile, buildPointEdits, generateQuestions, buildMarkdown, buildStandaloneHtml,
+    findCloseRepeats, evaluateTiming, analyze, analyzeAudio, analyzeText, describeTempo, buildContentMap, evaluateAnswer, buildCoachingFeedback, getIndustryProfile, buildPointEdits, generateQuestions, buildMarkdown, buildStandaloneHtml,
     improveSentence, buildRewrites, parseSubtitle, highlightSpans, gradeOf, WEIGHTS,
     _internal: { fftInPlace, pitchOfFrame, resample, lowpass, tokenize, splitSentences, stemRe, collect, percentile, median, bandScore, blockLabel }
   };

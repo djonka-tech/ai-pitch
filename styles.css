@@ -419,3 +419,34 @@ html[data-stage-theme="on"] .stage-lights { display:block; pointer-events:none; 
   .big-score { font-size: 44px; }
   canvas.chart { border-color: #ccc; background: #fff; }
 }
+
+/* First screen and project setup — November 2026 */
+html[data-stage-theme="on"] .hero { padding:78px 48px 62px; background:radial-gradient(ellipse at 90% 10%,#35244588,transparent 65%),#111320; }
+.hero-eyebrow { position:relative; z-index:1; color:var(--accent2); font-size:11px; font-weight:700; letter-spacing:1.7px; margin:0 0 20px; }
+.hero h1 { font-size:clamp(30px,4.6vw,56px); line-height:1.12; letter-spacing:-1.7px; max-width:970px; margin-bottom:24px; }
+html[data-stage-theme="on"] .hero > p { max-width:660px; font-size:17px; line-height:1.7; }
+.hero-actions { position:relative; z-index:1; margin:30px 0 16px; gap:12px; }
+.hero-actions .btn { min-height:52px; }
+html[data-stage-theme="on"] .hero .hero-note { font-size:12px; color:var(--muted2); margin:0; }
+.landing-benefits { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin:24px 0; }
+.landing-benefits article { border:1px solid var(--line); background:var(--card); border-radius:16px; padding:26px; }
+.landing-benefits article > span { font-size:10px; letter-spacing:1.4px; color:var(--accent2); }
+.landing-benefits h2 { margin:18px 0 10px; font-size:18px; }
+.landing-benefits p { color:var(--muted); font-size:14px; margin:0; }
+.project-settings { border:1px solid var(--line); border-radius:12px; padding:22px; margin:26px 0 30px; min-width:0; }
+.project-settings legend { padding:0 10px; color:var(--muted); font-size:13px; }
+.recording-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.recording-heading .hero-eyebrow { margin-bottom:10px; }
+.recording-heading h2 { font-size:26px; }
+.foot a { color:var(--muted); text-underline-offset:3px; }
+@media(max-width:700px) {
+  html[data-stage-theme="on"] .hero { padding:46px 22px 34px; }
+  .hero h1 { letter-spacing:-.8px; }
+  .hero h1 br { display:none; }
+  .landing-benefits { grid-template-columns:1fr; gap:12px; }
+  .landing-benefits article { padding:22px; }
+  .hero-actions { flex-direction:column; align-items:stretch; }
+  .project-settings { padding:16px; }
+  .hero-eyebrow { font-size:10px; letter-spacing:1px; }
+}
+@media(prefers-reduced-motion:reduce) { .screen { animation:none; } }
