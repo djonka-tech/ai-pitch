@@ -262,15 +262,23 @@ Traction: четыре пилота, два перешли в годовые к�
       };
       r.onerror = (e) => {
         if (!state.recording || state.recognition !== r || e.error === 'no-speech') return;
-        failures = 3;
+        const transient = ['aborted', 'network'].includes(e.error);
+        failures = transient ? failures + 1 : 3;
+        if (failures < 3) {
+          asrBadge.textContent = 'повторная попытка';
+          asrBadge.className = 'badge';
+          $('#liveTranscript').textContent = 'Распознавание прервалось. Повторно подключаюсь…';
+          return;
+        }
         const reasons = {
+          aborted: 'Safari повторно прервал сеанс распознавания речи.',
           network: 'Не удалось связаться с сервисом расшифровки. Проверьте интернет.',
           'not-allowed': 'Браузер запретил распознавание речи. Разрешение на запись звука и разрешение на распознавание могут различаться.',
           'service-not-allowed': 'В этом браузере сервис распознавания речи недоступен.',
           'audio-capture': 'Распознавание не смогло получить микрофон одновременно с записью.',
           'language-not-supported': 'Сервис браузера не поддерживает распознавание русского языка.'
         };
-        const message = (reasons[e.error] || 'Браузер остановил расшифровку речи.') + ' Звук продолжает записываться. После остановки прослушайте запись; текст можно добавить вручную. Если сайт открыт внутри мессенджера, попробуйте открыть ссылку в Safari или Chrome.';
+        const message = (reasons[e.error] || 'Браузер остановил расшифровку речи.') + ' Код: ' + (e.error || 'unknown') + '. Звук продолжает записываться. После остановки прослушайте запись; текст можно добавить вручную.';
         showAsrFallback(message);
       };
       r.onend = () => {
