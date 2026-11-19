@@ -131,12 +131,14 @@ Traction: четыре пилота, два перешли в годовые к�
 
   /* ==================== ЗАПИСЬ С МИКРОФОНА ==================== */
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mobileCapture = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const asrBadge = $('#asrStatus');
   const asrFallback = $('#asrFallback');
   function showAsrFallback(message) {
     asrBadge.textContent = 'недоступно';
     asrBadge.className = 'badge bad';
     if (!tr.value.trim()) $('#liveTranscript').textContent = message;
+    if (state.recording) $('#recStatus').textContent = 'Звук записывается. Расшифровка недоступна — после остановки можно добавить текст вручную.';
     asrFallback.classList.remove('hidden');
   }
   asrFallback.addEventListener('click', () => {
@@ -168,6 +170,12 @@ Traction: четыре пилота, два перешли в годовые к�
     return '';
   }
 
+  function createRecorder(stream) {
+    const mime = pickMime();
+    try { return new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+    catch (_) { return new MediaRecorder(stream); }
+  }
+
   function fmtTime(sec) {
     const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
     return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
@@ -194,11 +202,12 @@ Traction: четыре пилота, два перешли в годовые к�
     try {
       const r = new SR();
       let running = false, failures = 0, restart, notifyEnd;
-      r.lang = 'ru-RU'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+      r.lang = 'ru-RU'; r.continuous = !mobileCapture; r.interimResults = true; r.maxAlternatives = 1;
       const begin = () => {
         try {
           // Browsers with track input can use the same microphone as the recorder.
-          try { r.start(track); } catch (_) { r.start(); }
+          if (mobileCapture) r.start();
+          else { try { r.start(track); } catch (_) { r.start(); } }
           running = true;
         } catch (_) {
           showAsrFallback('Не удалось запустить распознавание. Звук продолжает записываться.');
@@ -248,7 +257,14 @@ Traction: четыре пилота, два перешли в годовые к�
       r.onerror = (e) => {
         if (!state.recording || state.recognition !== r || e.error === 'no-speech') return;
         failures = 3;
-        const message = e.error === 'network' ? 'Сервис распознавания недоступен. Проверьте интернет или попробуйте другой браузер.' : 'Браузер не смог распознать речь. Проверьте разрешение на микрофон или попробуйте другой браузер.';
+        const reasons = {
+          network: 'Не удалось связаться с сервисом расшифровки. Проверьте интернет.',
+          'not-allowed': 'Браузер запретил распознавание речи. Разрешение на запись звука и разрешение на распознавание могут различаться.',
+          'service-not-allowed': 'В этом браузере сервис распознавания речи недоступен.',
+          'audio-capture': 'Распознавание не смогло получить микрофон одновременно с записью.',
+          'language-not-supported': 'Сервис браузера не поддерживает распознавание русского языка.'
+        };
+        const message = (reasons[e.error] || 'Браузер остановил расшифровку речи.') + ' Звук продолжает записываться. После остановки прослушайте запись; текст можно добавить вручную. Если сайт открыт внутри мессенджера, попробуйте открыть ссылку в Safari или Chrome.';
         showAsrFallback(message);
       };
       r.onend = () => {
@@ -448,10 +464,10 @@ Traction: четыре пилота, два перешли в годовые к�
       const deviceId = $('#micDevice').value;
       let stream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: { ...(deviceId ? { deviceId: { exact: deviceId } } : {}), channelCount: { ideal: 1 }, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: mobileCapture ? (deviceId ? { deviceId: { ideal: deviceId } } : true) : { ...(deviceId ? { deviceId: { exact: deviceId } } : {}), channelCount: { ideal: 1 }, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
       } catch (e) {
         if (!['OverconstrainedError', 'NotSupportedError'].includes(e.name)) throw e;
-        stream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
       state.stream = stream;
       let an;
@@ -465,7 +481,7 @@ Traction: четыре пилота, два перешли в годовые к�
           an = meter;
         }
       } catch (_) { /* keep recording if the meter cannot be initialized */ }
-      const recorder = new MediaRecorder(stream);
+      const recorder = createRecorder(stream);
       resetAudio(); state.audioSource = 'mic'; state.recorder = recorder;
       const chunks = []; state.chunks = chunks;
       let resolveFinished;
@@ -1027,9 +1043,7 @@ Traction: четыре пилота, два перешли в годовые к�
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('Запись недоступна в этом браузере. Введите ответ текстом ниже.');
       const deviceId=$('#micDevice').value;
       stream = await navigator.mediaDevices.getUserMedia({audio:deviceId ? {deviceId:{exact:deviceId}} : true});
-      const mime=pickMime();
-      try { recorder=new MediaRecorder(stream,mime?{mimeType:mime}:undefined); }
-      catch (_) { recorder=new MediaRecorder(stream); }
+      recorder=createRecorder(stream);
       const release=()=>{active=false;try{recognition?.stop();}catch(_){}stream.getTracks().forEach(t=>t.stop());};
       recorder.ondataavailable=e=>{if(e.data?.size)chunks.push(e.data);};
       recorder.onstop=()=>{
