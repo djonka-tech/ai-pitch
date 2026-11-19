@@ -163,6 +163,8 @@
 
       <div id="previewPlayer" class="pitch-player hidden"><div class="player-heading"><span class="player-icon" aria-hidden="true">▶</span><div><b>Прослушайте выступление</b><small>Проверьте звук перед анализом</small></div></div><audio id="audioPreview" controls class="hidden" preload="metadata"></audio><div class="playback-volume"><label for="volume_audioPreview">Громкость</label><output id="volumeLabel_audioPreview" for="volume_audioPreview">100%</output><input id="volume_audioPreview" type="range" min="0" max="3" step="0.1" value="1" aria-label="Громкость прослушивания"><small id="volumeHint_audioPreview"></small></div></div>
       <p id="inputStatus" class="muted small" role="status"></p>
+      <div class="row"><button type="button" id="btnDictate" class="btn ghost">Диктовать текст отдельно</button></div>
+      <p id="dictationStatus" class="muted small" role="status">Если расшифровка во время записи не работает, попробуйте отдельную диктовку. Она добавляет текст без новой аудиозаписи и также зависит от сервиса браузера.</p>
       <label class="field">
         <span>Транскрипт выступления <em id="trSource" class="muted"></em></span>
         <textarea id="transcript" readonly rows="9" placeholder="Здесь появится распознанный текст или субтитры. Ручной ввод доступен в режиме «Только текст»."></textarea>
@@ -226,7 +228,7 @@
 </footer>
 
 <script src="lexicon.js"></script>
-<script src="engine.js?v=publish-20261119"></script>
-<script src="app.js?v=asr-recovery-20261119"></script>
+<script src="engine.js?v=cleanliness-dictation-20261119"></script>
+<script src="app.js?v=cleanliness-dictation-20261119"></script>
 </body>
 </html>
