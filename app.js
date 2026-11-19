@@ -32,7 +32,7 @@
 
   const state = {
     report: null, samples: null, sampleRate: 0, audioBlob: null, audioName: '',
-    cues: null, recording: false, dictating: false, stream: null, recorder: null, chunks: [], analyser: null,
+    cues: null, recording: false, stream: null, recorder: null, chunks: [], analyser: null,
     audioCtx: null, mediaStreamSrc: null, recognition: null, asrFinal: '', asrInterim: '',
     recStart: 0, recTimerId: null, levelId: null, levelHistory: [], silenceStart: 0, pauseCount: 0,
     inputMode: 'mic', audioSource: null, audioVersion: 0, starting: false, finishing: null, previewUrl: null, analyzing: false, cueStart: null, demo: false, lastSignalAt: null
@@ -78,7 +78,7 @@ Traction: четыре пилота, два перешли в годовые к�
   $('#btnBack1').addEventListener('click', () => showStep(1));
   $('#btnBack2').addEventListener('click', () => { showStep(2); });
   $('#btnNew').addEventListener('click', () => {
-    if (state.dictating || state.recording || state.starting || state.finishing) return;
+    if (state.recording || state.starting || state.finishing) return;
     state.report = null; state.textDraft=''; state.demo=false; resetAudio();
     $('#report').innerHTML = ''; $('#transcript').value = ''; updateTrCount();
     showStep(1);
@@ -94,7 +94,7 @@ Traction: четыре пилота, два перешли в годовые к�
 
   /* ==================== ВКЛАДКИ ==================== */
   function setInputMode(mode) {
-    if(!['mic','file','text'].includes(mode)||state.dictating||state.recording||state.starting||state.finishing||state.analyzing)return false;
+    if(!['mic','file','text'].includes(mode)||state.recording||state.starting||state.finishing||state.analyzing)return false;
     if(state.inputMode!==mode){
       if(state.inputMode==='text')state.textDraft=tr.value;
       resetAudio();state.demo=false;
@@ -141,7 +141,6 @@ Traction: четыре пилота, два перешли в годовые к�
     if (!tr.value.trim()) $('#liveTranscript').textContent = message;
     if (state.recording) $('#recStatus').textContent = 'Звук записывается. Расшифровка недоступна — после остановки можно добавить текст вручную.';
     asrFallback.classList.remove('hidden');
-    if (state.dictating) $('#dictationStatus').textContent = message.replace('Звук продолжает записываться. После остановки прослушайте запись; текст можно добавить вручную.', 'Отдельная диктовка не сохраняет аудио. Можно ввести текст вручную.');
   }
   asrFallback.addEventListener('click', () => {
     const draft = tr.value.trim();
@@ -203,28 +202,23 @@ Traction: четыре пилота, два перешли в годовые к�
 
   function startAsr(track) {
     if (!SR || !$('#enableAsr').checked) return;
-    const active = () => state.recording || state.dictating;
-    const dictationOnly = !!state.dictating;
     try {
       const r = new SR();
       let running = false, failures = 0, restart, notifyEnd, sessionStarted = 0, emptySessions = 0;
       r.lang = 'ru-RU'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
       const begin = () => {
-        if (!active() || state.recognition !== r) return;
+        if (!state.recording || state.recognition !== r) return;
         try {
           // Browsers with track input can use the same microphone as the recorder.
           if (mobileCapture) r.start();
           else { try { r.start(track); } catch (_) { r.start(); } }
           running = true;
           sessionStarted = Date.now();
-        } catch (error) {
-          showAsrFallback('Не удалось запустить распознавание. Код: ' + error.name + '.');
+        } catch (_) {
+          showAsrFallback('Не удалось запустить распознавание. Звук продолжает записываться.');
         }
       };
       state.recognition = r;
-      r.onstart = () => {
-        if (state.dictating) $('#dictationStatus').textContent = 'Слушаю. Говорите текст выступления — он появится ниже.';
-      };
       state.stopAsr = async () => {
         clearTimeout(restart);
         try {
@@ -254,10 +248,8 @@ Traction: четыре пилота, два перешли в годовые к�
             if (txt) {
               state.asrFinal += (state.asrFinal ? ' ' : '') + txt;
               const now = (Date.now() - state.recStart) / 1000;
-              if (!dictationOnly) {
-                state.cues = state.cues || [];
-                state.cues.push({ start: round2(state.cueStart == null ? Math.max(0, now - txt.length / 14) : state.cueStart), end: round2(now), text: txt });
-              }
+              state.cues = state.cues || [];
+              state.cues.push({ start: round2(state.cueStart == null ? Math.max(0, now - txt.length / 14) : state.cueStart), end: round2(now), text: txt });
               state.cueStart = null;
             }
           } else {
@@ -269,14 +261,13 @@ Traction: четыре пилота, два перешли в годовые к�
         updateRecognitionText();
       };
       r.onerror = (e) => {
-        if (!active() || state.recognition !== r || e.error === 'no-speech') return;
+        if (!state.recording || state.recognition !== r || e.error === 'no-speech') return;
         const transient = ['aborted', 'network'].includes(e.error);
         failures = transient ? failures + 1 : 3;
         if (failures < 3) {
           asrBadge.textContent = 'повторная попытка';
           asrBadge.className = 'badge';
           $('#liveTranscript').textContent = 'Распознавание прервалось. Повторно подключаюсь…';
-          if (state.dictating) $('#dictationStatus').textContent = 'Распознавание прервалось. Повторная попытка…';
           return;
         }
         const reasons = {
@@ -293,7 +284,7 @@ Traction: четыре пилота, два перешли в годовые к�
       r.onend = () => {
         running = false;
         notifyEnd?.();
-        if (!active() || state.recognition !== r) return;
+        if (!state.recording || state.recognition !== r) return;
         if (failures >= 3) {
           if (asrBadge.textContent !== 'недоступно') showAsrFallback('Браузер остановил распознавание речи. Звук продолжает записываться.');
           return;
@@ -314,41 +305,6 @@ Traction: четыре пилота, два перешли в годовые к�
   }
 
   const round2 = (x) => Math.round(x * 100) / 100;
-
-  async function stopDictation() {
-    if (!state.dictating) return;
-    state.dictating = false;
-    state.finishing = Promise.resolve(state.stopAsr?.());
-    $('#btnDictate').disabled = true;
-    try {
-      await state.finishing;
-      if (state.asrInterim) {
-        state.asrFinal = (state.asrFinal + ' ' + state.asrInterim).trim();
-        state.asrInterim = ''; updateRecognitionText();
-      }
-      $('#dictationStatus').textContent = tr.value.trim() ? 'Диктовка завершена. Проверьте текст перед анализом. Аудиозапись не создавалась.' : 'Текст не получен. Сообщение браузера: ' + $('#dictationStatus').textContent;
-    } finally {
-      state.finishing = null;
-      $('#btnDictate').textContent = 'Диктовать текст отдельно';
-      $('#btnDictate').disabled = !SR;
-      $('#enableAsr').disabled = false;
-      syncTranscriptMode();
-    }
-  }
-  $('#btnDictate').disabled = !SR;
-  if (!SR) $('#dictationStatus').textContent = 'В этом браузере нет встроенного распознавания. В режиме «Только текст» можно использовать диктовку клавиатуры или вставить готовую расшифровку.';
-  $('#btnDictate').addEventListener('click', () => {
-    if (state.dictating) { stopDictation(); return; }
-    if (state.dictating || state.recording || state.starting || state.finishing || state.analyzing || !SR) return;
-    // Start directly from the tap, with no getUserMedia or MediaRecorder competing
-    // for the microphone. Keep any text and existing audio already captured.
-    state.dictating = true; state.asrFinal = tr.value.trim(); state.asrInterim = ''; state.cues = null;
-    tr.readOnly = true;
-    $('#enableAsr').checked = true; $('#enableAsr').disabled = true;
-    $('#btnDictate').textContent = 'Остановить диктовку';
-    $('#dictationStatus').textContent = 'Подключаю распознавание. Аудиозапись в этом режиме не создаётся.';
-    startAsr();
-  });
 
   function addTip(kind, text) {
     const box = $('#liveTips');
@@ -525,7 +481,7 @@ Traction: четыре пилота, два перешли в годовые к�
   }
 
   async function startRecording() {
-    if (state.dictating || state.starting || state.recording || state.finishing || state.analyzing) return;
+    if (state.starting || state.recording || state.finishing || state.analyzing) return;
     state.starting = true; $('#btnRec').disabled = true;
     try {
       // Ask for Web Audio while the click is still active. Recording itself
@@ -677,7 +633,7 @@ Traction: четыре пилота, два перешли в годовые к�
   fi.addEventListener('change', () => { if (fi.files[0]) handleFile(fi.files[0]); });
 
   async function handleFile(file) {
-    if (state.dictating || state.recording || state.starting || state.finishing || state.analyzing) return;
+    if (state.recording || state.starting || state.finishing || state.analyzing) return;
     if(state.inputMode!=='file')setInputMode('file');
     resetAudio();
     const version = state.audioVersion;
@@ -804,7 +760,6 @@ Traction: четыре пилота, два перешли в годовые к�
     }
     state.analyzing = true; $('#btnAnalyze').disabled = true;
     try {
-    if (state.dictating) await stopDictation();
     if (state.recording) await stopRecording();
     if (state.finishing) await state.finishing;
     if (state.audioBlob && !state.samples) {
@@ -1282,7 +1237,7 @@ Traction: четыре пилота, два перешли в годовые к�
     return x;
   }
   async function demo() {
-    if (state.dictating || state.recording || state.starting || state.finishing || state.analyzing) return;
+    if (state.recording || state.starting || state.finishing || state.analyzing) return;
     setInputMode('mic');
     resetAudio(); state.audioSource = 'demo';
     $('#topic').value = 'ИИ-платформа приёмки товара на складе';
