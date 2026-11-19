@@ -132,6 +132,7 @@ Traction: четыре пилота, два перешли в годовые к�
   /* ==================== ЗАПИСЬ С МИКРОФОНА ==================== */
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const mobileCapture = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const appleMobileCapture = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const asrBadge = $('#asrStatus');
   const asrFallback = $('#asrFallback');
   function showAsrFallback(message) {
@@ -162,7 +163,9 @@ Traction: четыре пилота, два перешли в годовые к�
   }
 
   function pickMime() {
-    const list = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4', ''];
+    const list = appleMobileCapture
+      ? ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', '']
+      : ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4', ''];
     for (const m of list) {
       if (!m) return '';
       try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (e) { /* noop */ }
@@ -201,14 +204,16 @@ Traction: четыре пилота, два перешли в годовые к�
     if (!SR || !$('#enableAsr').checked) return;
     try {
       const r = new SR();
-      let running = false, failures = 0, restart, notifyEnd;
-      r.lang = 'ru-RU'; r.continuous = !mobileCapture; r.interimResults = true; r.maxAlternatives = 1;
+      let running = false, failures = 0, restart, notifyEnd, sessionStarted = 0, emptySessions = 0;
+      r.lang = 'ru-RU'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
       const begin = () => {
+        if (!state.recording || state.recognition !== r) return;
         try {
           // Browsers with track input can use the same microphone as the recorder.
           if (mobileCapture) r.start();
           else { try { r.start(track); } catch (_) { r.start(); } }
           running = true;
+          sessionStarted = Date.now();
         } catch (_) {
           showAsrFallback('Не удалось запустить распознавание. Звук продолжает записываться.');
         }
@@ -232,6 +237,7 @@ Traction: четыре пилота, два перешли в годовые к�
       r.onresult = (ev) => {
         if (state.recognition !== r) return;
         failures = 0;
+        emptySessions = 0;
         asrBadge.textContent = 'распознаётся';
         asrBadge.className = 'badge ok';
         let interim = '';
@@ -271,7 +277,7 @@ Traction: четыре пилота, два перешли в годовые к�
         running = false;
         notifyEnd?.();
         if (!state.recording || state.recognition !== r) return;
-        if (failures++ >= 3) {
+        if (failures >= 3) {
           if (asrBadge.textContent !== 'недоступно') showAsrFallback('Браузер остановил распознавание речи. Звук продолжает записываться.');
           return;
         }
@@ -279,7 +285,10 @@ Traction: четыре пилота, два перешли в годовые к�
         state.asrFinal = (state.asrFinal + ' ' + state.asrInterim).trim();
         state.asrInterim = '';
         state.cueStart = null;
-        restart = setTimeout(begin, 300);
+        // A normal end or silence is not a service failure. Keep listening
+        // until Stop; slow down retries if the browser ends sessions immediately.
+        emptySessions = Date.now() - sessionStarted < 1500 ? emptySessions + 1 : 0;
+        restart = setTimeout(begin, Math.min(3000, 300 + emptySessions * 300));
       };
       begin();
     } catch (e) {
@@ -381,6 +390,15 @@ Traction: четыре пилота, два перешли в годовые к�
     if(!audio||!slider||boundPlayback.has(audio))return;
     boundPlayback.add(audio);slider.value=String(state.playbackGain??1);
     const show=()=>{label.textContent=Math.round(Number(slider.value)*100)+'%';slider.setAttribute?.('aria-valuetext',label.textContent);};show();
+    if (appleMobileCapture) {
+      // Keep the native iOS player: routing it through a second AudioContext
+      // can leave playback silent after microphone capture.
+      audio.muted = false; audio.volume = 1;
+      slider.max = '1'; slider.value = '1'; slider.disabled = true;
+      hint.textContent = 'Громкость регулируется кнопками iPhone или iPad.';
+      show();
+      return;
+    }
     const apply=async()=>{
       const requested=Math.max(0,Math.min(3,Number(slider.value)||0));
       state.playbackGain=requested;
@@ -419,8 +437,15 @@ Traction: четыре пилота, два перешли в годовые к�
     if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
     state.previewUrl = URL.createObjectURL(state.audioBlob);
     $('#audioPreview').src = state.previewUrl;
+    $('#audioPreview').load();
     $('#audioPreview').classList.remove('hidden'); $('#previewPlayer').classList.remove('hidden');bindPlayback('audioPreview');
   }
+
+  $('#audioPreview').addEventListener('error', () => {
+    if (!state.audioBlob || !$('#audioPreview').getAttribute('src')) return;
+    const code = $('#audioPreview').error?.code;
+    $('#recStatus').textContent = 'Браузер не смог воспроизвести запись' + (code ? ' (код ' + code + ')' : '') + '. Повторите короткую запись, оставив Safari открытым.';
+  });
 
   async function listMics() {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -496,8 +521,9 @@ Traction: четыре пилота, два перешли в годовые к�
         clearTimeout(state.captureStopTimer);
         clearInterval(state.recTimerId); clearInterval(state.levelId);
         const asrFinished = state.asrFinished || state.stopAsr?.();
+        releaseCapture();
         try {
-          const blob = new Blob(chunks, { type: chunks[0]?.type || recorder.mimeType });
+          const blob = new Blob(chunks, { type: recorder.mimeType || chunks[0]?.type });
           if (!blob.size) throw new Error('Браузер не сохранил звук. Проверьте микрофон или загрузите аудиофайл.');
           state.audioBlob = blob;
           previewAudio();
@@ -510,7 +536,6 @@ Traction: четыре пилота, два перешли в годовые к�
             showAsrFallback('Распознанный текст не появился. Можно продиктовать его с клавиатуры в режиме «Только текст».');
           }
           if (state.asrInterim) state.cues = null; // Use estimates if the last phrase has no final timestamp.
-          releaseCapture();
           asrFallback.disabled = false;
           $('#enableAsr').disabled = false;
           state.asrFinished = state.finishing = state.finalizeCapture = null;
@@ -519,7 +544,8 @@ Traction: четыре пилота, два перешли в годовые к�
       };
       state.finalizeCapture = recorder.onstop = finalize;
       recorder.onerror = () => { addTip('bad', 'Браузер прервал запись. Попробуйте отключить распознавание речи и повторить запись.'); stopRecording(); };
-      recorder.start(1000);
+      if (appleMobileCapture) recorder.start();
+      else recorder.start(1000);
       state.recStart = Date.now(); state.recording = true;
       state.asrFinal = ''; state.asrInterim = ''; state.cueStart = null;
       state.levelHistory = []; state.pauseCount = 0; state.silenceStart = 0; state.silenceCounted = false; state.lastSignalAt = null;
@@ -576,7 +602,11 @@ Traction: четыре пилота, два перешли в годовые к�
     $('#recStatus').textContent = 'Сохраняю запись…';
     $('#btnStop').classList.add('hidden');
     const finished = state.finishing;
-    state.captureStopTimer = setTimeout(state.finalizeCapture, 3000);
+    // Only onstop guarantees delivery of the final audio data. A timer must
+    // never build the Blob early: Safari may still be writing its MP4 trailer.
+    state.captureStopTimer = setTimeout(() => {
+      $('#recStatus').textContent = 'Safari или браузер ещё сохраняет звук. Оставьте страницу открытой…';
+    }, 3000);
     try {
       if (state.recorder.state !== 'inactive') state.recorder.stop();
     } catch (_) { state.finalizeCapture(); }
