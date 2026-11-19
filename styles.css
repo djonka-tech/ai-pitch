@@ -440,6 +440,7 @@ html[data-stage-theme="on"] .hero .hero-note { font-size:12px; color:var(--muted
 .recording-heading h2 { font-size:26px; }
 .foot a { color:var(--muted); text-underline-offset:3px; }
 @media(max-width:700px) {
+  .topbar { position: static; }
   html[data-stage-theme="on"] .hero { padding:46px 22px 34px; }
   .hero h1 { letter-spacing:-.8px; }
   .hero h1 br { display:none; }
